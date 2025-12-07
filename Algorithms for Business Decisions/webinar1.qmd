@@ -1,0 +1,162 @@
+---
+title: "Webinar 1"
+format: html
+---
+
+The questions in the Able.com case should be relatively straightforward if you understand the material in the lectures. However, Q7 requires some tricky model interpretation involving an interaction.  Let's review briefly using the familiar `mtcars` dataset.
+
+
+```{r}
+# load packages and data (mtcars is included in base R)
+
+library(tidyverse)
+
+mtcars
+```
+
+## Multiple regression model with additive terms
+
+Question: what is the relationship between wt and mpg after accounting for the influence of (i.e., "holding constant" or "controlling for") hp and cyl? 
+
+```{r}
+# model with additive terms
+
+lm(mpg ~ wt + hp + cyl, data = mtcars) |> 
+  summary()
+```
+
+An increase of 1 unit in wt is associated with a decrease of 3.17 in mpg, holding hp and cyl constant. For further discussion see 4.2 in Learn R + Statistics: https://rstudio-connect.business.utah.edu/content/efa58947-ff64-460f-92b2-76bf0e218867/Learn%20R%20plus%20Statistics.html#holding-constant-controlling-for.
+
+## Multiple regression with an interaction between two numeric variables
+
+Now a different question: how does the relationship between wt on mpg vary by cyl? 
+
+This question can be answered with an interaction model.  
+
+```{r}
+# fit interaction model
+
+lm(mpg ~ hp + wt * cyl, data = mtcars) |> 
+  summary()
+
+```
+
+This is tricky to interpret.  Let's work through it.
+
+The main effects:
+
+- hp: interpretation is the same as in the non-interaction model because it is not involved in the interaction.
+
+- wt:  This is the slope of the wt-mpg regression line among cars with cyl = 0.
+
+- cyl: This is the slope of the cyl-mpg regression line among cars with wt = 0.
+
+The interaction term: 
+
+- wt:cyl: the change in the slope of the wt-mpg regression line when comparing cars that differ by 1 in number of cylinders.  
+
+More detail on interpreting interaction models can be found in Learn R + Statistics 4.3: https://rstudio-connect.business.utah.edu/content/efa58947-ff64-460f-92b2-76bf0e218867/Learn%20R%20plus%20Statistics.html#sec-interactions
+
+## Calculating group-specific regression slopes
+
+To get the wt-mpg regression slope for different cyl values we use the coefficient for wt and add in appropriate multiples of the interaction term:
+
+- Effect when cyl is 4:  -9.16 + .89 * 4 = -5.6
+- Effect when cyl is 6:  -9.16 + .89 * 6 = -3.8
+- Effect when cyl is 8:  -9.16 + .89 * 8 = -2.04
+
+The overall effect of weight is negative.  But the effect is less negative as the number of cylinders increases. 
+
+# Plotting interaction effects from the model
+
+Creating a plot illustrating the interaction helps for interpretation.  Basically we want use the model to plot wt and mpg with regression lines for subgroups defined by cyl == 4, 6, 8.
+
+Here's the process using simulation.
+
+1. Fit the model
+
+```{r}
+# save the model as an object for later reference
+
+interaction_model <- lm(mpg ~ hp + wt * cyl, data = mtcars)
+
+```
+
+2. Create a dataset with the values for which we'd like predictions. This dataset must contain all the variables in the model, in exactly the same form.
+
+```{r}
+# expand.grid() automatically creates a dataframe with a row for each unique combination of variables
+
+(new_data <- expand.grid(hp = mean(mtcars$hp), # use the mean
+                               wt = 2:5,       # use the integers corresponding to the range of the data
+                               cyl = c(4, 6, 8)))
+```
+
+3. Make predictions using the model formula.
+
+```{r}
+# predict using the model and add the predictions to new_data for use in plotting
+
+new_data$preds <- predict(interaction_model, newdata = new_data)
+
+new_data
+
+```
+
+4. Plot the predictions.
+
+```{r}
+
+new_data |>
+  mutate(cyl = factor(cyl)) |> # turn this into a factor for plotting convenience
+  ggplot(aes(wt, preds, col = cyl, group = cyl)) +
+  geom_point() +
+  geom_line() +
+  theme_minimal() +
+  ggtitle("Interaction between cyl and wt in predicting mpg")
+
+```
+
+Now we can connect the calculated slopes to the picture:
+
+- The red line has a slope of  -9.16 + .89 * 4 = -5.6. So, for example, when we go from 2 to 3 in wt the red line declines by about 5.
+- Green line:  -9.16 + .89 * 6 = -3.8
+- Red line:  -9.16 + .89 * 8 = -2.04
+
+## Multiple regression with an interaction between a numeric variable and a factor variable (for reference)
+
+The regression output and interpretation would be different if cyl, rather than being numeric, had been encoded as a factor variable. This would be reasonable since, although the variable represents a count, there are only three possibilities, which could be interpreted as categories. 
+
+```{r}
+# fit interaction model with cyl encoded as a factor
+
+lm(mpg ~ hp + wt * cyl, data = mtcars |> mutate(cyl = factor(cyl))) |> 
+  summary()
+
+```
+
+The main effects:
+
+- hp: interpretation is the same as in the non-interaction model because it is not involved in the interaction.
+
+- wt:  This is the slope of the wt-mpg regression line among cars with cyl = 4 (the reference category).
+
+- cyl6: The difference in the intercept of the weight-mpg regression line for cyl = 6 cars compared to cyl = 4 cars. 
+
+- cyl8: The difference in the intercept of the weight-mpg regression line for cyl = 8 cars compared to cyl = 4 cars. 
+
+The interaction terms: 
+
+- wt:cyl6: the change in the slope of the wt-mpg regression line for cyl = 6 cars compared to cyl = 4 cars.  
+
+- wt:cyl8: the change in the slope of the wt-mpg regression line for cyl = 8 cars compared to cyl = 4 cars.  
+
+To get the cyl effects for the factor model we start with the slope for the reference case (this will be the coefficient for wt) and then add in the coefficients for the interactions.
+
+- Effect when cyl is 4:  -5.52
+- Effect when cyl is 6:  -5.52 + 2.27 = -3.25
+- Effect when cyl is 8:  -5.52 + 3.35 = -2.17
+
+The estimates are similar but different because the factor model is more flexible and captures non-linear relationships between cyl and wt.
+
+

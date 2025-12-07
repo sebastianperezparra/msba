@@ -1,0 +1,441 @@
+---
+title: "Webinar 8"
+format:
+  html:
+    embed-resources: true
+    toc: true
+execute:
+  include: false
+  eval: false
+---
+
+```{r}
+#| include: false
+library(tidyverse)
+library(caret)
+library(grf)
+library(fixest) # For fixed effects estimation
+```
+
+# Agenda
+
+-   Review Shophub case
+-   Panel data
+-   Billboard case
+
+# Shophub review
+
+The key thing to remember is that meta-learners will not necessarily improve the estimate of ATE. (The caveat is that if you are using a random forest base learner and your data is non-linear then the ATE estimate will probably be better simply because the model specification is likely to be better.) But that's not the goal. *The main reason for using meta-learners is to estimate heterogeneous treatment effects*.
+
+Why should you care about heterogeneous treatment effects? If your goal is not to answer "was the treatment effective" but "who should I send the marketing email to"?
+
+Predictive algorithms don't always do the greatest job with this second question. Typically, we would figure out who to send the marketing email to by predicting who is likely to buy. Or, I guess you could send the email to the people who are predicted *not* to buy, in hopes that you can change their minds. In any case, predicting buying is a poor fit for the actual question, which is: who is most likely to respond? Meta-learners focus on this question.
+
+Remember:
+
+-   ATE is at the aggregate level.
+-   CATE represents heterogeneous treatment effects, which, if they are at the unit level (individual level), are known as ITE.
+
+## Q1
+
+What is the ATE in the experimental data? 
+
+```{r}
+# Download experimental data
+exp <- read.csv("https://raw.githubusercontent.com/jefftwebb/data/main/experimental_email_data.csv")
+
+# ATE by comparison of means
+lm(next_mnth_pv ~ mkt_email, data = exp) |> 
+  summary()
+```
+
+Experimental baseline is about 1382. The 95% CI will be 1382 +/- 2 * 29.
+
+## Q2
+
+Use the observational data to estimate the ATE using multiple regression.
+
+```{r}
+# Download the data
+obs <- read.csv("https://raw.githubusercontent.com/jefftwebb/data/main/observed_email_data.csv")
+
+# Fit a model with all possible controls.  These will be only pre-treatment
+# variables
+lm(next_mnth_pv ~ ., data = obs) |>
+  summary() 
+```
+
+Estimated ATE is the coefficient for `mkt_email` (the treatment indicator), representing the corrected impact of the marketing email. Why can we use causal language ("impact")? Because we have controlled for confounding due to known variables.
+
+This model, however, gives no insight into heterogeneous treatment effects.
+
+## Q3
+
+Using the observational data create an S learner, with linear regression as the base learner.
+
+```{r}
+# Fit the single model using all the data
+s_mod <- lm(next_mnth_pv ~ ., data = obs)
+
+# Use the single model to predict 
+mean(predict(s_mod, newdata = obs |> mutate(mkt_email = 1)) -
+  predict(s_mod, newdata = obs |> mutate(mkt_email = 0))) 
+# 1522.7, about the same as the linear model
+
+# But: estimated ITE is a constant
+(predict(s_mod, newdata = obs |> mutate(mkt_email = 1)) -
+  predict(s_mod, newdata = obs |> mutate(mkt_email = 0)))[1:10]
+
+```
+
+Note that without an interaction this is not a model of heterogeneous treatment effects! Every individual in this linear S-learner model gets the same estimate, which is identical to the treatment coefficient.
+
+## Q4
+
+Repeat the analysis from the previous question, this time using random forest as the base learner.
+
+```{r}
+set.seed(123)
+
+#Set up the cv instructions in caret
+train_control <- trainControl(method = "cv", number = 5)
+
+# fit single model with RF as the base learner
+rf_mod <- train(next_mnth_pv ~.,
+                data = obs,
+                method = "ranger",
+                trControl = train_control)
+
+# Procedure is to use the model to predict assuming
+# 1. everyone got the treatment
+# 2. no one got the treatment
+# These predictions are the estimated potential outcomes
+# Estimated ITE is the difference between them
+
+# Here are the first 10 ITE
+(predict(rf_mod, newdata = obs |> mutate(mkt_email = 1)) -
+  predict(rf_mod, newdata = obs |> mutate(mkt_email = 0)))[1:10] |> round()
+
+# ATE
+mean(predict(rf_mod, newdata = obs |> mutate(mkt_email = 1)) -
+  predict(rf_mod, newdata = obs |> mutate(mkt_email = 0)) ) #1187 ish
+
+
+```
+
+Now we get heterogenous treatment effects.
+
+## Q5
+
+Use the observational data to create a T learner, with random forest as the base learner.
+
+```{r}
+set.seed(123)
+
+# Filter data and fit model for controls
+d0 <- filter(obs, mkt_email==0) |> select(-mkt_email)
+
+rf_mod0 <- train(next_mnth_pv ~.,
+                data = d0,
+                method = "ranger",
+                trControl = train_control)
+
+# Filter data and fit model for treatment
+d1 <- filter(obs, mkt_email==1) |> select(-mkt_email)
+
+rf_mod1 <- train(next_mnth_pv ~.,
+                data = d1,
+                method = "ranger",
+                trControl = train_control)
+
+# Procedure is to use each model to predict for all observations
+# Here are the first 10 estimated ITE using the entire data set
+(predict(rf_mod1, newdata = obs) -
+    predict(rf_mod0, newdata = obs))[1:10] |> 
+  round()
+
+# Calculate ATE
+(predict(rf_mod1, newdata = obs) -
+    predict(rf_mod0, newdata = obs)) |>
+  mean() # 1536 ish
+
+```
+
+## Q6
+
+Estimate CATE/ITE and ATE with the observational data using a causal forest model.
+
+```{r}
+# Fit model
+cf_mod <- causal_forest(X = select(obs, -mkt_email, -next_mnth_pv), 
+                        Y = obs$next_mnth_pv, 
+                        W = obs$mkt_email,
+                        seed = 123)
+
+# Get first 10 predicted treatment effects
+predict(cf_mod)$predictions[1:10] |> round()
+
+# Get ATE
+average_treatment_effect(cf_mod)  # 1520ish
+
+```
+
+## Model Evaluation?
+
+The estimated heterogeneous treatment effects differ pretty substantially between these 3 meta-learners.
+
+-   S: `1074, 1077, 1117, 1164, 1135, 1054, 1137, 1146, 1039, 1112`
+-   T: `1215, 1378, 1575, 1357, 1559, 1398, 1606, 1451, 1799, 2986`
+-   CF: `1261, 1606, 1639, 1607, 1520, 1510, 1454, 1481, 1694, 2043`
+
+Which model is more accurate? This might be the wrong question.  What really matters for implementation is not so much the estimated treatment effect but the ordered list (ordered by estimated treatment effect) of which customers to send an email. So the question should be: which model best ranks the customers?
+
+But: what do we mean by "best"?
+
+The problem is that we have no ground truth for unit level treatment effects. We know whether and how much customers actually spent---that's in the data. What we don't know is the counterfactual--- what they would have spent without the email. So, if the goal is to predict spending we can compute a performance metric: in the simplest case this will be the difference between predicted and observed spending in the training data. But if the goal is to estimate a treatment effect there is no ground truth in any data, no observed effect for comparison, hence no available performance metric.
+
+The best we could do would be to compare methods using *simulated data* that included unit level potential outcomes with  defined treatment effects.
+
+The experimental data does not help. We can use it to estimate an accurate ATE. But the ITE will be undefined. Why?
+
+For implementation, one possible approach would be to average the ranks from the different meta-learners and use that to order customers to be emailed.
+
+```{r}
+S <- c(1074, 1077, 1117, 1164, 1135, 1054, 1137, 1146, 1039, 1112)
+Tw <- c(1215, 1378, 1575, 1357, 1559, 1398, 1606, 1451, 1799, 2986)
+CF <- c(1261, 1606, 1639, 1607, 1520, 1510, 1454, 1481, 1694, 2043)
+
+data.frame(S = rank(S),
+           Tw = rank(Tw),
+           CF = rank(CF)) |>
+  mutate(avg_rank = (S + Tw + CF)/3)
+
+```
+
+You could then prioritize customers by the average rank. The larger the average rank the greater likelihood they will be responders.
+
+# Panel data
+
+First let's simulate some data for the grocery store scenario in the lectures. Recall the scenario: a grocery store chain changes the location of the health food aisle in 2023. Did this change boost sales?
+
+```{r}
+sim_panel <- function(n_stores = 50,
+                      years = 2021:2023,
+                      treatment_year = 2023, 
+                      base_sales_mean = 1000000,
+                      base_sales_sd = 100000,
+                      yearly_variation_sd = 50000,
+                      noise_sd = 10000,
+                      treatment_effect = 0.01,
+                      seed = 123){
+  
+  set.seed(seed)
+  
+  grocery_data <- tibble(store_id = rep(1:n_stores, each = length(years)),
+                         year = rep(years, times = n_stores),
+                         base_sales = rnorm(n_stores * length(years), mean = base_sales_mean, sd = base_sales_sd),
+                         yearly_variation = rnorm(n_stores * length(years), mean = 0, sd = yearly_variation_sd),
+                         noise = rnorm(n_stores * length(years), mean = 0, sd = noise_sd)) |>
+    mutate(treated = if_else(year == treatment_year, 1, 0),
+           sales = round((base_sales * (1 + treatment_effect * treated) + yearly_variation + noise)/1000)) |>
+    select(store_id, year, sales, treated)
+  
+  grocery_data
+}
+
+gd <- sim_panel()
+```
+
+The cross-sectional data would be sales for multiple stores without a time dimension---that is, for a single year:
+
+```{r}
+# Cross-sectional data
+filter(gd, year == 2021)$sales
+```
+
+Note: sales are in 1000s.
+
+The time series data would be multiple years without the unit dimension---that is, for a single store.
+
+```{r}
+# Time series data
+filter(gd, store_id == 1)$sales
+```
+
+Panel data combines cross-sectional data and time series data---multiple entities and multiple time periods.
+
+```{r}
+# Panel data
+gd
+```
+
+This is in *long format* with each row representing a unique store-year combination. It is also tidy in that each observation forms a row, and each variable forms a column. This works better for panel data methods compared to (untidy) wide format:
+
+```{r}
+# Make it wide
+gd |>
+  pivot_wider(id_cols = store_id,
+              names_from = year,
+              values_from = c(sales, treated))
+```
+
+## Pooled regression
+
+```{r}
+# Estimate treatment effect with pooled regression
+lm(sales ~ treated, data = gd)
+```
+
+Problem: possible "between" confounding --- between stores and between time periods. There could be a pre-existing trend or differential effects between stores. This approach ignores the panel structures in the data.
+
+## 1WFE: within store
+
+Concept: use stores as their own controls! For this to work we need *within store* treatment variation.
+
+```{r}
+# within store treatment variation
+gd |>
+  filter(store_id == 1)
+```
+
+The analysis is simple but ingenious: control for store. This averages across all the within store treated-untreated differences and therefore removes any between store confounding.
+
+```{r}
+# control for store
+lm(sales ~ treated + factor(store_id), data = gd) |>
+  summary()
+
+# or using feols from the fixest package
+feols(sales ~ treated | store_id, data = gd) # the term following the | is the fixed effects
+```
+Using `feols()` has advantages: 
+
+1. produces appropriate warnings 
+2. automatically computes clustered SEs
+
+Why would we want to cluster SEs? OLS regression assumes that all observations are independent.  But in FE regression there are unit and/or time dependencies, meaning that the observations are more similar than the regression algorithm expects.  The result is that SEs will be overestimated (actual variance will be lower because the observations are not independent), making incorrect findings of statistical significance (false positives) more likely.
+
+## 1WFE: within year
+
+Concept: control for time trends. For this to work we need within year treatment variation.
+
+```{r}
+# within year treatment variation in 2021
+gd |>
+  filter(year == 2021)
+```
+
+Hmmm. No treated vs untreated variation in 2021. Same in 2022 (all 0s) and in 2023 (all 1s). Yet the `lm()` model will fit.  `feols()` helpfully throws an error.
+
+```{r}
+# Using lm
+lm(sales ~ treated + factor(year), data = gd)
+
+# feols 
+feols(sales ~ treated | year, data = gd)
+```
+
+So, the `lm()` output is misleading. What is going on?
+
+It should not be possible to estimate a coefficient for `treated`, because there are no treated-untreated differences within years.
+
+The key to understanding the mistake is the NA for `factor(year)2023`. `treated` is perfectly collinear with `year`.
+
+- treated = 0 if and only if year is not 2023
+- treated = 1 if and only if year is 2023
+- so, treated is perfectly predictable from year
+
+R responds by dropping `factor(year)2023` from the model equation. (Python would do the same.)  
+
+The effective model equation is then: `sales = 1017.3 - 10.66 * treated - 26.14 * factor(year)2022`. But `treated` is the same thing as `factor(year)2023`.  So this model is really just estimating the difference *between* years. It is not an estimate of the difference between treated and untreated *within* years.  
+
+We would need to introduce treatment variability within years to estimate this 1WFE model. Something like this:
+
+```{r}
+set.seed(123)
+
+# Illustrate treatment variability within years -- THIS IS JUST FOR ILLUSTRATION. DO NOT COPY!
+mutate(gd, treated = rbinom(150, 1, .5))
+```
+
+However, as I noted in the lectures this is an implausible treatment scenario.
+
+## 2WFE
+
+Concept: control for both between store and between year confounding.
+
+We need within store and within time period treatment variation. We accomplish that by *modifying the data so that treated is an indicator not for whether a store got the treatment but whether it is currently getting treated in the post period.*
+
+```{r}
+# 2WFE data -- THIS IS JUST FOR ILLUSTRATION. DO NOT COPY!
+(two_wfe <- gd |>
+   mutate(post = ifelse(year == 2023, 1, 0), # post is a treatment period indicator
+         treated = ifelse(store_id %% 2 == 0, 0, 1),
+         treated = treated * post) |> # treated is now an indicator for whether a store
+                                      # is getting treatment in the treatment period
+  select(store_id, post, year, sales, treated))
+```
+
+In this data we now have treatment variation within years and within stores.
+
+```{r}
+# fit 2WFE with feols
+
+feols( sales ~ treated | store_id + year, 
+       cluster = c("store_id", "year"), # cluster SEs by each FE
+               data = two_wfe)
+```
+
+# Billboard case
+
+Felix Frankfurter, a data analyst at FitLife, designs a geo-experiment to estimate the causal effect of an offline marketing campaign on app downloads in Southern cities. The campaign involves placing billboards in 9 treatment cities, with 42 cities serving as controls, during the month of May. Felix plans to use panel data methods, such as fixed effects models, to analyze the daily app download data attributed to users in each city, with the goal of calculating the true ROI and potentially extending the campaign to control cities if successful.
+
+## Data
+
+```{r}
+ds <- read_csv("https://raw.githubusercontent.com/jefftwebb/data/main/offline_marketing.csv")
+
+ds
+```
+
+```{r}
+read_csv("https://raw.githubusercontent.com/jefftwebb/data/main/offline_marketing_data_dictionary.csv")
+```
+
+
+## Questions
+
+These questions are designed to start with a couple of questions that ignore the panel structure in the data (Q3 and Q4) before getting to increasingly sophisticated and appropriate fixed effects models that make the most of panel data (Q5 and Q6).
+
+1.  Create a plot comparing the time series of the treated vs. control cities. Is a treatment effect visible? Explain.
+
+2.  Calculate the true ATE of the cities getting the treatment during the experimental period using the `tau` variable. Remember: `tau` would not be available to Felix!
+
+3.  Estimate ATE with a pooled regression model, so-called because it "pools" observations across cities and dates to estimate just one intercept and one coefficient. The pooled model using this data is: $Y_{it} = \alpha + \beta*treated_{i} + \epsilon_{it}$, where
+
+    -   $Y_{it}$ is downloads for city $i$ at time $t$
+    -   $\alpha$ is the intercept, which is constant across all observations
+    -   $\beta$ is the coefficient for the treatment effect
+    -   $treated_{i}$ is the time invariant treatment indicator whether city $i$ is in the treatment group (1) or control group (0)
+    -   $\epsilon_{it}$ is the error term for city $i$ at time $t$
+
+4.  Attempt to improve on the pooled regression by adding the observable city characteristics as control variables to the pooled regression: `city_size`, `income_level`, `climate`.
+
+    -   Explain the rationale for this model
+    -   Compare the ATE estimate to the one from the previous question
+ 
+5.  Fit a one-way fixed effects model (1WFE) that controls for between city effects. The standard errors should be clustered. Be careful: this 1WFE model won't fit with the existing panel data structure because the treatment variable is unit invariant. It indicates whether a city is in the treatment group and consequently has no within city variation. It needs to be modified to be an indicator for whether a city is *currently getting treated in the post period.* (Hint: use the `post` variable to do the modification.) Once that change is made the 1WFE model can be estimated: $Y_{it} = \alpha_i +  \beta*treated_{it} + \epsilon_{it}$. In this model there will be $i$ intercepts for city ($\alpha_i$) and one coefficient for the treatment effect ($\beta$).
+
+    -   Explain how this 1WFE model differs from the multiple regression model in the previous question
+    -   Report ATE
+
+6.  Estimate the ATE with a two-way fixed effects model (2WFE) that controls for between city *and* between time effects: $Y_{it} = \alpha_i + \alpha_t + \beta*treated_{it} + \epsilon_{it}$. Standard errors should be clustered. In this model there will be $i$ intercepts for city ($\alpha_i$) and $t$ intercepts for time ($\alpha_t$) and one coefficient for the treatment effect ($\beta$).
+
+    -   Explain how this 2WFE model differs from the 1WFE model in the previous question
+    -   Report ATE
+
+7.  Write up the results of FitLife's billboard geo-experiment for Felix. (Remember: the `tau` variable will not be available to him.) Make sure to address:
+
+    -   The set up of the experiment
+    -   Challenges in estimating the treatment effect
+    -   The best ATE estimate from the multiple candidate models (along with some explanation of *why* it is the best)

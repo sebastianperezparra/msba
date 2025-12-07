@@ -1,0 +1,341 @@
+---
+title: "Webinar 4"
+format: 
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    toc-title: "Contents"
+execute:
+  warning: false
+  message: false
+---
+
+# Updated AI policies
+
+The recommended use of AI in this course is potentially confusing. On the one hand, I have told you that you can and should use AI to help you complete assignments. On the other hand, I have also said that you should not simply cut and paste from AI output for the case assignments. Let me clarify.
+
+- Interact with AI to get ideas for both coding and writing.  The goal should be to improve your understanding and enhance your learning.
+- It is tempting to simply cut and paste.  Don't.  You learn by writing your own code and sentences.
+- You are responsible for being able to explain and defend everything you include in a notebook. 
+
+I have accordingly updated the AI policy in the syllabus:
+
+"Misuse of AI, such as using it to complete assignments without demonstrating understanding or passing off AI-generated content as your own work, will be considered a violation of academic integrity and will have potential consequences for your grade. In particular, students who appear to be cutting and pasting AI code and writing into their notebooks will be selected for 20 minute technical interviews.  Those who fail the interview -- because they can't convincingly explain their own coding or writing -- will receive a score of 0 on the assignment. Bottom line: You are responsible for understanding the material you submit for the assignments.  This includes code as well as details in your written responses."
+
+# SkyConnect case review
+
+First, an acknowledgment. This case was too hard, with not enough guidance and explanation. Apologies for that. It is sometimes hard with a new assignment in a new course to get the level right, and anticipate all of the pain points. Hopefully it was still a worthwhile learning experience for you.
+
+Note that the grading is set up to drop the lowest case grade.
+
+```{r}
+# Load packages and data
+
+library(tidyverse)
+
+d <- read.csv("https://raw.githubusercontent.com/jefftwebb/data/refs/heads/main/SkyConnect_data.csv")
+
+```
+
+## Q1
+
+Use the SkyConnect data to calculate inputs to the power calculation for experiment sizing. Report historical average revenue per user (ARPU) and the standard deviation of revenue per user (SDRPU). 
+
+This was tricky because the SC data contains (potentially) multiple rows per customer.  
+
+One option for ARPU would be to simply calculate the mean of the revenue column. But note that this would be average revenue *per booking* not *per user*. The experiment is being run *on users* (each user is either in the treatment group or the control group). So, with multiple rows, we need to choose how to aggregate to the user level, with the goal of one row per customer.
+
+Isn't there one right way of doing this when calculating ARPU? Not really.  *It depends on the context and goal of the experiment.* You have to think it through.
+
+Your LLM may have told you --- with perfect confidence --- that the right way to aggregate is to sum revenue for each customer then take the average. This would be correct if the new seat selection interface was designed to impact total revenue from customers (including, for example, where and how often they fly).  But it wasn't.  The point was to influence just seat upgrades. The problem is that if we sum the upgrade amounts for each customer we inadvertently include information about booking frequency. Consider two cases:
+
+- Customer A has 10 bookings and upgrades 10 times at 15 dollars each.  Average upgrade revenue is 15 dollars. Total is 150 dollars.
+- Customer B has 2 bookings and upgrades 2 times, also at 15 dollars each.  Average upgrade revenue is 15 dollars. Total is 30.
+
+From the perspective of what the new interface is trying to influence --- upgrade amount *per customer transaction* -- these customers are exactly the same. It is true that they differ dramatically in the total amount spent on upgrades.  But that is due to the number of bookings not their upgrade behavior.  To isolate revenue due to upgrade behavior, then, the mean works better than the sum. It reflects per transaction upgrade amounts regardless of frequency. 
+
+For ARPU you needed to calculate the average revenue for each customer then take the average of those averages.
+
+```{r}
+# average per user
+d %>%
+  group_by(customer_id) |>
+  summarize(revenue = mean(revenue), .groups = "drop") |>
+  summarize(mean(revenue),
+            sd(revenue)) 
+            
+# arpu = 5.7
+# sdrpu = 14.45
+
+```
+
+By contrast, this does not work:
+
+```{r}
+# average revenue *per booking* not per user
+d %>%
+  summarize(mean(revenue),
+            sd(revenue)) 
+```
+
+This doesn't work either:
+
+```{r}
+# Aggregate by summing upgrade revenue
+d %>%
+  group_by(customer_id) |>
+  summarize(revenue = sum(revenue), .groups = "drop") |>
+  summarize(mean(revenue),
+            sd(revenue)) 
+```
+
+As noted, this method introduces frequency as a confounder.  It is measuring the wrong thing.
+
+## Q2
+
+What is the required sample size for this A/B test? 
+
+```{r}
+
+# using R:
+(n <- power.t.test(delta = .5, 
+                   sd = 14.45, 
+                   sig.level = .05, 
+                   power = .8, 
+                   alternative = "one.sided")$n)
+
+2*ceiling(n) # round up
+```
+
+The `power.t.test()` function uses a `delta` argument (the value for which comes from the case description). `sd` = 14.45 come from the data, as calculated in Q1.  We round up and double for the total sample size.
+
+If you used different inputs, we will grade your code rather than your numeric answer.
+
+However, if your number turned out to be astronomically large you should have been suspicious.
+
+## Q3
+
+What  is the required duration in days for this A/B test assuming (1) the sample size from the previous question (2) the average number of customers who would be *new to the experiment each day*, assuming that customers enter the experiment on their first booking during the test period.
+
+This also is tricky! The point is that customers are only new to the experiment once, so when they come back, they should not be counted as candidates for the experiment. Therefore, the functional number of daily new customers will be quite a bit less than the number of total customers.
+
+
+```{r}
+
+# This is incorrect--there are repeat customers per day
+d |>
+  group_by(session_date)|>
+  count() |>
+  ungroup() |>
+  summarize(mean(n)). # 1194.178
+
+# This is correct -- it counts only a customer's first appearance
+(new <- d |>
+  arrange(customer_id, session_date) |> # sort by customer and date
+  group_by(customer_id)|>
+  slice(1) |> # note use of slice--very handy! combined with group_by() 
+              # this takes the first row for every customer and thereby 
+              # drops subsequent visits
+  group_by(session_date) |>
+  summarize(n = n(), .groups = "drop") |> # count customers by first                                                  # appearance by date
+  summarize(mean(n))) # take the average
+
+2*ceiling(n) / new
+
+```
+
+## Q4
+
+Tony would like to reduce the duration of the test using CUPED.   He knows the technique requires repeat customers (which SkyConnect Plus members are  by definition) and that it works best to reduce sample sizes when spending behaviors are stable month-to-month.  Report the customer level correlation in average spending between January and February 2024.  Hint: to get the correlation you will need to compute average spending per month for customers who were active in both January and February.
+
+```{r}
+
+# This code 
+# 1. Filters for months 1 & 2
+# 2. Takes average revenue per customer-month (could also do sum but it would
+# produce a slightly different answer)
+# 3. Counts rows by customer_id and selects just n == 2 (meaning they appear
+# in both Jan and Feb)
+# 4. Pivots the 2 revenue values into columns for calculating correlation
+
+(monthly_revenue <- d |>
+  filter(month %in% c(1, 2)) |>
+  group_by(customer_id, month) |>
+  summarize(revenue = mean(revenue), .groups = "drop") |>
+  add_count(customer_id) |>
+  filter(n == 2) |>
+  pivot_wider(names_from = month, 
+              values_from = revenue, 
+              names_prefix = "month_")) |>
+  head()
+
+cor(monthly_revenue$month_1, monthly_revenue$month_2)
+
+```
+
+## Q5 
+
+What is the updated sample size and approximate duration for the experiment using CUPED? Round your answer up to the closest day.  Hint: use the correlation from the previous question as an input to the variance reduction factor when computing adjusted Cohen's d.
+
+```{r}
+# Calculations are as follows:
+
+rho <-  .8096162
+
+vrf <- sqrt(1-rho^2) # vrf = variance reduction factor
+
+0.03460208 / vrf # effect size from G*Power with 5.7 mean	and 14.45 sd	= 0.05895138
+
+# from gstar power with effect size = 0.05895138:  7118
+
+# duration: 7118/ 267 = 26.65 = ~ 27 days
+
+```
+
+CUPED cuts the sample by (20658 - 7118) / 20658 * 100 = 66%!
+
+## Q6
+
+Apologies, this question was too involved with too little preparation. Therefore, kudos to those of you who engaged with it and learned something, but everyone gets a free pass on this one --- automatic full credit.
+
+The basic idea is to not just design but also to analyze the experiment using CUPED.  The analysis involves simply using the `historical_avg_revenue` variable as a predictor in a regression and then interpreting the treatment coefficient as the treatment effect estimate.
+
+Here are the details.
+
+```{r}
+# Download the historical data
+td <- read.csv("https://raw.githubusercontent.com/jefftwebb/data/refs/heads/main/SkyConnect_test_data.csv")
+
+```
+
+We are comparing customer averages during the treatment.  We need to set up the data with one row per customer by again averaging upgrade revenue, as discussed in Q1.  The `treatment` and `historical_avg_revenue` values are repeated for each customer, so we select just the first instance of each.
+
+```{r}
+(td_agg <- td |>
+  filter(new <= 7118) |>
+  group_by(customer_id) |>
+  summarize(n(),
+            rev = mean(revenue),
+            tr = first(treatment),
+            hist_rev = first(historical_avg_revenue))) 
+```
+
+We then use this aggregated data set in the CUPED regression analysis with historical revenue as a predictor to reduce variance.
+
+```{r}
+lm(rev ~ tr + hist_rev, data = td_agg ) |>
+  summary()
+
+```
+
+The p-value in a linear regression is two-sided.  Halve it to get the p-value for a directional null hypothesis.
+
+The formula for a CI is: coefficient  - critical value * SE.  The critical value for a one tailed test is 1.645, so the lower bound for the CI is .68 - 1.645 *.32 ~ .15.  The CI is [.15, Inf].  
+
+Why Inf?  A one tailed test is not designed to estimate an upper bound; we only care about the lower bound  (if the hypothesized direction is "greater").
+
+How do we know the critical value will be 1.645? Use the quantile function for the t distribution.  The quantile will be .95 for a one-tailed test, with degrees of freedom calculated as n - minus the number of model parameters: 2 coefficients + 1 intercept.  So, 7118 - 3 = 7115.
+
+```{r}
+qt(.95, df = 7115)
+
+# at this n the t distribution will have become almost exactly normal so N(0, 1) 
+# gives basically the same answer
+
+qnorm(.95)
+```
+
+Note that the experiment will be underpowered for an analysis without CUPED.
+
+```{r}
+t.test(filter(td_agg, tr == 1)$rev,
+       filter(td_agg, tr == 0)$rev,
+       alternative = "greater")
+
+```
+
+This is testing whether treatment is greater than control.  Statistically it is not.  The 95% CI for the difference is provided in the output:  [-.21, inf].  Since this is a one tailed test for a directional null, we only care about the lower boundary (hence the upper is left undefined). The lower bound is below zero, which indicates non-significance. 
+
+
+# Preparation for Fluent.io
+
+For this case you will be again designing an experiment and exploring options for reducing the size and duration.
+
+Tasks:
+
+- Use the historical data to calculate monthly ARPU and SDRPU.
+- Calculate experiment size as for a traditional fixed duration A/B test.
+- Calculate experiment duration.
+- Think: could CUPED be used to reduce sample size?
+- Design a group sequential test (GST) and interpret the design output.
+- Write up a proposal for the GST.
+
+## Code and examples
+
+### Q1
+
+ARPU is a widely used metric that companies seek to increase.  However, the definition of "revenue" can differ by context.  In particular, it should align with what the intervention being tested is designed to impact.  For example, in SkyConnect the new interface was designed to increase per transaction seat upgrades.  To capture this we used mean revenue from seat upgrades.  In the Fluent case the goal is to increase total revenue from customers.  For this, total revenue per month would be more appropriate.  Sum revenue by month then take the average to get ARPU.
+
+Here is a code example using the SkyConnect data.
+
+```{r}
+
+d |>
+  group_by(customer_id, month) |>
+  summarize(monthly_revenue = sum(revenue), .groups = "drop") |>
+  summarize(arpu = mean(monthly_revenue),
+            sdrpu = sd(monthly_revenue))
+```
+
+### Q2
+
+Use a sample size calculator with the specified parameters.
+
+### Q3 
+
+Calculate experiment duration.  For this you need to know the number of new customers per day.  The code will be similar to Q3 from SkyConnect:
+
+```{r}
+# Details are explained in the SkyConnect review
+d |>
+  arrange(customer_id, session_date) |>
+  group_by(customer_id)|>
+  slice(1) |> # note use of slice--very handy! 
+  group_by(session_date) |>
+  summarize(n = n(), .groups = "drop") |>
+  summarize(mean(n))
+```
+
+### Q4
+
+Think about whether you could use CUPED to reduce sample size and duration for the Fluent experiment.  Explain your answer without cutting and pasting the AI's answer or you might find yourself with a bonus technical interview.
+
+### Q5  
+
+Size the experiment for a group sequential test with 4 checkpoints.  The easiest thing to do is to use Rpact (either the app or R code).  You need to interpret the design output.  Here is an example with one checkpoint, alpha = .1 and power = .9, where the MEI is 2 and an observed SD from historical data of 20:
+
+```{r}
+library(rpact)
+?getDesignGroupSequential
+?getSampleSizeMeans
+
+getDesignGroupSequential(typeOfDesign = "asOF", kMax = 2,
+        alpha = 0.1, beta = .1, typeBetaSpending = "bsOF") |>
+    getSampleSizeMeans(alternative = 2, stDev = 20) |>
+    summary() 
+```
+
+- The sample size at the first checkpoint is 1372 (round up to the nearest even number).
+- The expected number of subjects if H1 is true is 2138.
+- The duration calculation mirrors the one above in Q3.
+
+### Q6
+
+If the treatment effect is less than the MEI, we would like to stop the experiment early. That is the advantage of a group sequential test. The probability for early stopping under H0 (the assumption of no difference between the group means) would come from the line "Overall exit probability (under H0)":  0.4395. Alternatively we could add Exit probability for efficacy (under H0) and Exit probability for futility (under H0): .02 + .4195 = .4395.
+
+### Q7  
+
+Write up a proposal for the experiment, including the details for the previsous questions.  Again, you can work with AI but the paragraph needs to be in your own words.
+
+## Questions??

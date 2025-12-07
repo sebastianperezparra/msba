@@ -1,0 +1,145 @@
+---
+title: "Assignment 1 Able.com Case"
+author: "Sebastian Perez Parra"
+date: "2025-08-24"
+format: 
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    toc-title: "Contents"
+    embed-resources: true
+execute:
+  include: true
+  eval: true
+  error: false    
+  warning: false
+  message: false
+
+---
+We start by loading the necessary libraries and the datasets.
+
+```{r load libraries}
+library(tidyverse)
+```
+
+```{r load datasets}
+toy_sales <- read_csv("https://raw.githubusercontent.com/jefftwebb/data/main/toy_sales_data.csv")
+toy_sales_PO <- read_csv("https://raw.githubusercontent.com/jefftwebb/data/main/toy_sales_PO.csv")
+
+```
+
+
+# Q1
+
+We calculate the true ATE using the potential outcomes.
+
+```{r true ATE}
+# code annotations go within the chunks
+
+true_ATE = mean(toy_sales_PO$y1 - toy_sales_PO$y0) %>% round(2)
+print(paste("- The true ATE using the potential outcomes is", true_ATE))
+```
+- This means that average treatment effect is 45.9 more toys sold than the control group.
+
+# Q2
+
+Now, we estimate the ATE using the observed outcomes.
+
+
+```{r estimated ATE}
+est_ATE = round(mean(toy_sales$weekly_amount_sold[toy_sales$is_on_sale == TRUE]) -
+mean(toy_sales$weekly_amount_sold[toy_sales$is_on_sale == FALSE]),2)
+print(paste("- The estimated ATE using the observed outcomes is", est_ATE))
+```
+- This means that the estimated average treatment effect is 77.96 toys sold than the control group, 32.06 more than the true ATE.
+
+
+# Q3
+
+- The bias in using the observed data is that we may not be considering a confounding variable which may be palying a role in the weekly amount sold.
+
+# Q4
+
+```{r balance table}
+toy_sales %>%
+  group_by(is_on_sale) %>%
+  summarise(mean_size = mean(avg_week_sales),
+            sd_size = sd(avg_week_sales),
+            n = n())
+
+```
+
+- The mean difference (although with a standard deviation which can make them also be considered similar) between the treatment and control group (is on sale or not) is notable. This means that the groups are not exchangeable and that company size may be a potential confounder.
+
+# Q5
+
+We run a linear regression model with weekly_amount_sold and is_on_sale.
+
+```{r linear regression model}
+lm(weekly_amount_sold ~ is_on_sale + avg_week_sales, data = toy_sales)
+```
+- The adjusted ATE is 69.01 which is 23.11 higher than the true ATE. This is better estimate than the estimated ATE (using the observed outcomes).
+
+# Q6
+
+We calculate the true CATE of a sales campaign conditional on weeks to Christmas.
+
+```{r true CATE}
+true_CATE <- toy_sales_PO %>% group_by(weeks_to_xmas) %>% summarise(CATE = round(mean(y1 - y0), 2))
+
+print(true_CATE)
+```
+
+- The CATE numbers represent (as it's name suggests) the average treatment effect **conditioned** on weeks to Christmas.
+
+
+# Q7
+
+We run a linear regression model with weekly_amount_sold, is_on_sale and an interaction term between is_on_sale and weeks_to_xmas.
+
+```{r interaction model}
+model = lm(weekly_amount_sold ~ is_on_sale * weeks_to_xmas + avg_week_sales, data = toy_sales)
+```
+
+We now estimate the CATE using the regression model above.
+
+```{r estimated CATE}
+print(paste("- Effect when weeks_to_xmas is 0:",32.635 + 6.968 * 0))
+print(paste("- Effect when weeks_to_xmas is 1:",32.635 + 6.968 * 1))
+print(paste("- Effect when weeks_to_xmas is 2:",32.635 + 6.968 * 2))
+print(paste("- Effect when weeks_to_xmas is 3:",32.635 + 6.968 * 3))
+```
+- The CATE numbers represent the average treatment effect **conditioned** on weeks to Christmas using the interaction model.
+
+**Challenge:** To know plot and view the result, we begin by creating a dataset with the estimated values.
+
+```{r create dataset}
+(new_data <- expand.grid(avg_week_sales = mean(toy_sales$avg_week_sales), # used the mean
+                               is_on_sale = 0:1,       # used the integers corresponding to the range of the data
+                               weeks_to_xmas = c(0, 1, 2, 3)))
+
+```
+
+We make predictions with the values.
+
+
+```{r predictions}
+new_data$preds <- predict(model, newdata = new_data)
+
+new_data
+```
+
+To finally plot the results.
+
+
+```{r plot}
+new_data |>
+  mutate(weeks_to_xmas = factor(weeks_to_xmas)) |> # turned this into a factor for plotting convenience
+  ggplot(aes(is_on_sale, preds, col = weeks_to_xmas, group = weeks_to_xmas)) +
+  geom_point() +
+  geom_line() +
+  theme_minimal() +
+  ggtitle("Interaction Between Weeks to Christmas and Is On Sale in Predicting Weekly Amount Sold")
+```
+

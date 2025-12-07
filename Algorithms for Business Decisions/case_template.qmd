@@ -1,0 +1,80 @@
+---
+title: "Case Template"
+format: 
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    toc-title: "Contents"
+    embed-resources: true
+execute:
+  include: true
+  eval: true    
+  warning: false
+  message: false
+
+---
+We start by loading the necessary libraries and the datasets.
+
+
+# Q1
+
+If you repeat the question, do not make it part of the heading!
+
+```{r}
+# code annotations go within the chunks
+
+2 + 2 # example of addition
+```
+
+Comments on your results go here:
+
+- Bullets help organize your material
+- For bullets to work there needs to be a space after the preceding line
+- Emphasis can be added with *italics* and **bolding**
+
+If you want to highlight your answer (without adding it to the ToC) simply bold it:
+
+**Answer**:
+
+- point 1
+- point 2
+
+The code chunks included here are R chunks but you could use python just as easily by changing the chunk instructions:  `{python}`.
+
+# Q2
+
+```{r}
+
+```
+
+# Q3
+
+```{r}
+
+```
+
+# Q4
+
+```{r}
+
+```
+
+# Q5
+
+```{r}
+
+```
+
+# Q6
+
+```{r}
+
+```
+
+# Q7
+
+```{r}
+
+```
+

@@ -1,0 +1,144 @@
+---
+title: "Billboard Case"
+author: "Sebastian Perez Parra"
+date: "2025-10-10"
+format: 
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    toc-title: "Contents"
+    embed-resources: true
+execute:
+  include: true
+  eval: true    
+  warning: false
+  message: false
+---
+
+We start by loading the necessary libraries and the dataset.
+
+```{r load libraries}
+#load libraries
+library(tidyverse)
+library(rpact)
+library(MatchIt)
+library(marginaleffects)
+library(caret)
+library(grf)
+library(fixest)
+```
+
+```{r}
+d <- read.csv("https://raw.githubusercontent.com/jefftwebb/data/main/offline_marketing.csv")
+```
+
+```{r}
+# Convert date to Date type
+d <- d %>%
+  mutate(date = as.Date(date))
+
+# Remove 'region' column (it's always "S")
+d$region <- NULL
+
+# Convert categorical variables to factors
+d$city_size     <- as.factor(d$city_size)
+d$income_level  <- as.factor(d$income_level)
+d$climate       <- as.factor(d$climate)
+d$gym_density   <- as.factor(d$gym_density)
+```
+
+
+# 1
+
+We start by creating a plot comparing the time series of the treated vs. control cities.
+
+```{r}
+# Group by date and treatment status, calculate average downloads
+daily_avg <- d %>%
+  group_by(date, treated) %>%
+  summarise(avg_downloads = mean(downloads), .groups = "drop") %>%
+  mutate(group = ifelse(treated == 1, "Treated", "Control"))
+
+# Plot
+ggplot(daily_avg, aes(x = date, y = avg_downloads, color = group)) +
+  geom_line() +
+  geom_vline(xintercept = as.Date("2021-05-15"), linetype = "dashed") +
+  labs(title = "Daily Downloads: Treated vs Control",
+       y = "Average Downloads", color = "Group") +
+  theme_minimal()
+```
+
+- There is clear evidence of a treatment effect after May 17. The gap in downloads between treated and control cities widens during the treatment period and remains consistently elevated across post-treatment dates.
+  
+# 2
+
+We calculate the true ATE of the cities getting the treatment during the experimental period using the tau variable.
+
+```{r}
+#we can just calculate the mean of
+mean(d$tau[d$treated == 1 & d$post == 1])
+
+#or use regression
+lm(tau ~ treated * post, data = d)
+```
+
+- The true ATE of the cities getting the treatment during the experimental period is 0.77.
+
+# 3
+
+We now estimate ATE with a pooled regression model.
+
+```{r}
+# Estimate treatment effect with pooled regression
+lm(downloads ~ treated, data = d)
+```
+
+
+- The estimated ATE is 0.9985. This means that the pooled regression shows that treated cities had, on average, 0.9985 more downloads per day than control cities during the study period, or about 1 download per day more due to the campaign.
+
+# 4
+
+Now we attempt to improve on the pooled regression by adding the observable city characteristics as control variables to the pooled regression: city_size, income_level, climate.
+
+```{r}
+lm(downloads ~ treated + city_size + income_level + climate, data = d)
+```
+
+- Adding city_size, income_level, and climate helps address omitted variable bias. It controls for the risk that differences in downloads between treated and control cities are driven by confounding city traits rather than the campaign.
+
+- The ATE estimate is 0.59. It reduces the treatment effect to almost half than the previous ATE (0.9985). This means that the variables that were included helped explain part of the differences between treatment and control.
+
+# 5
+
+We now fit a one-way fixed effects model (1WFE) that controls for between city effects.
+
+```{r}
+d <- d %>% mutate(treated_post = treated * post)
+
+feols(downloads ~ treated_post | city, data = d, cluster = "city") # the term following the | is the fixed effects
+```
+
+- The 1WFE model offers a stronger causal design by comparing each city to itself over time, rather than relying on cross-city comparisons. It eliminates bias from any city-level traits that don’t change over time — even if they’re unobserved — making the estimated treatment effect more credible. 
+
+
+- The ATE is 0.91. The ATE from this model is 0.91, compared to 0.59 from the multiple regression with city-level controls.
+
+
+# 6
+
+We estimate the ATE with a two-way fixed effects model (2WFE) that controls for between city and between time effects.
+
+```{r}
+feols(downloads ~ treated_post | city + date, data = d, cluster = c("city","date"))
+```
+
+- The 2WFE model improves on the 1WFE by controlling for both city-level and time-level confounding. While the 1WFE compares each city to itself over time, it does not account for time-specific shocks that affect all cities. The 2WFE adds date fixed effects, isolating the treatment effect from both city-specific baselines and time-varying influences.
+
+- The estimated ATE from this model is 0.69, lower than the 1WFE estimate of 0.91, suggesting that part of the earlier effect may have been driven by broader time trends.
+
+# 7
+
+- FitLife ran a geo-experiment to measure the impact of its billboard campaign on app downloads, comparing treated and control cities over time. Estimating the treatment effect posed two key challenges: unit differences (cities vary in size, income, and climate) and variation across time (trends or seasonality). To isolate the campaign’s impact, we tested multiple models, progressively controlling for city-level traits and time-specific shocks.
+
+- The best estimate comes from the two-way fixed effects (2WFE) model, which controls for both city and date fixed effects. This model yields an average treatment effect (ATE) of 0.69 additional downloads per day, reflecting within-city changes while accounting for broader time trends. It improves on simpler models by controlling for both unobserved city traits and time variation.

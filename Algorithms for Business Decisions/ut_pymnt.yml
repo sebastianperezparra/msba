@@ -1,0 +1,25 @@
+version: 2
+
+unit_tests:
+  - name: UT_payment_tiers_sql
+    model: payment_tiers
+    given:
+      - input: ref('stg_payments')
+        format: sql
+        rows: |
+          SELECT 1 AS ID, 10 AS ORDERID, 25 AS AMOUNT, 'credit_card' AS PAYMENTMETHOD, DATE '2025-10-18' AS CREATED
+          UNION ALL
+          SELECT 2, 11, 150, 'paypal', DATE '2025-10-19'
+          UNION ALL
+          SELECT 3, 12, 300, 'bank_transfer', DATE '2025-10-20'
+    expect:
+      format: sql
+      rows: |
+        SELECT 1 AS payment_id, 10 AS order_id, 25 AS amount, 'credit_card' AS payment_method, DATE '2025-10-18' AS payment_date,
+               'low' AS payment_tier, TRUE AS is_weekend, 10 AS payment_month
+        UNION ALL
+        SELECT 2, 11, 150, 'paypal', DATE '2025-10-19',
+               'medium', TRUE, 10
+        UNION ALL
+        SELECT 3, 12, 300, 'bank_transfer', DATE '2025-10-20',
+               'high', FALSE, 10

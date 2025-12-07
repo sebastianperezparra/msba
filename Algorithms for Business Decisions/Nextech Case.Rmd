@@ -1,0 +1,347 @@
+---
+title: "Assignment 6 Nextech Case"
+author: "Sebastian Perez Parra"
+date: "2025-09-25"
+format: 
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    toc-title: "Contents"
+    embed-resources: true
+execute:
+  include: true
+  eval: true
+  error: false    
+  warning: false
+  message: false
+---
+
+
+
+We start by loading the necessary libraries and the dataset.
+
+
+
+```{r load libraries}
+#load libraries
+library(tidyverse)
+library(rpact)
+library(MatchIt)
+library(marginaleffects)
+```
+
+```{r load dataset}
+#load historical data
+d <- read_csv("https://raw.githubusercontent.com/jefftwebb/data/main/management_training.csv")
+```
+
+
+
+# 1
+
+We begin by estimating the average treatment effect (ATE) by calculating the difference in mean engagement scores for treatment vs. control.
+
+
+
+```{r}
+mean(filter(d, intervention == 1)$engagement_score) - mean(filter(d, intervention == 0)$engagement_score)
+```
+
+
+
+or using regression. Either way will give us the same result.
+
+
+
+```{r}
+summary(lm(engagement_score ~ intervention, data  = d))
+```
+
+
+
+- The statistically significant ATE of the intervention is 0.43.
+
+# 2
+
+Now we estimate ATE with multiple regression, adjusting for possible confounders.
+
+
+```{r}
+summary(lm(engagement_score ~ intervention + tenure + n_of_reports + gender + role + last_engagement_score + department_score + department_size, data = d))
+```
+
+
+
+- The naive estimate of the treatment effect shows a great positive effect of the management training where the intervention results in an improvement of 0.43 in the engagement score. The estimate of the treatment effect with the regression is statistically significant but shows a decrease in the effect compared to the naive estimate. It estimates a 0.27 increase in engagement scores. This suggests that the naive effect is biased upward increasing the treatment effect.
+
+- The large naive effect is very possibly biased with selection. Since the data is historical observed data that is non compliant because some managers assigned to the training did not attend, while others attended without having been assigned, self selection was introduced. This eliminates any randomization. This difference could also be a hint of potential confounders, pre existing differences in the data that affect the treatment and the outcome.
+
+# 3
+
+We use coarsened exact matching (CEM) to create synthetic treatment and control groups for estimating the average treatment effect using the matched sample (ATM).
+
+**First**, we do the matching. Intervention is the dependent variable in the formula and outcome is left out because we are *modeling treatment assignment*. This creates a matchit object.
+
+
+
+```{r}
+m_cem <- matchit(formula = intervention ~ department_id + tenure + n_of_reports + gender + role + last_engagement_score + department_score + department_size,
+                 data = d,
+                 cutpoints = "sturges",
+                 # you could try = "sturges" for automatic bin selection
+                 method = "cem")
+
+m_cem
+```
+
+
+
+**Second**, we check the matches.
+
+
+
+```{r}
+summary(m_cem)
+```
+
+
+
+**Third**, we plot the matches to evaluate improvement. The goal is minimize treatment/control differences in the matched sample.
+
+
+
+```{r}
+plot(summary(m_cem))
+```
+
+
+
+In general this is an improvement: the matched sample variables are moving towards 0.
+
+**Fourth**, we construct the matched data set. This consists in a subset of only the matched units.
+
+
+
+```{r}
+(matched_cem <- match.data(m_cem))
+```
+
+
+
+**Finally**, we do the analysis using the matched data.
+
+
+
+```{r}
+lm(engagement_score ~ intervention + department_id + tenure + n_of_reports + gender + role + last_engagement_score + department_score + department_size, 
+   weights = weights, # this is necessary because of number differences in subclass
+   data = matched_cem) |>
+  summary()
+```
+
+
+
+-   The estimated treatment effect (ATM) using the matched sample is 0.22. That is, 0.22 more for the engagement score for managers that participated in the training.
+
+# 4
+
+We calculate and summarize propensity scores for the training program.
+
+
+
+```{r}
+# 1. Estimate propensity scores
+ps_model <- glm(intervention ~ department_id + tenure + n_of_reports + gender + role + last_engagement_score + department_score + department_size, 
+                family = "binomial", 
+                data = d) 
+
+# 2. Predict probabilities.  Use type = "response".
+d$ps <- predict(ps_model, type = "response") 
+  
+# 3. Calculate IPW
+d <- d |>
+  mutate(ipw = ifelse(intervention == 1, 1/ps, 1/(1 - ps)))
+
+# 4. Check overlap of propensity scores for trimming
+ggplot(d, aes(ps)) +
+  geom_histogram() +
+  facet_wrap(~intervention, ncol = 1)
+
+# or 
+
+summary(filter(d, intervention == 1)$ps)
+summary(filter(d, intervention == 0)$ps)
+```
+
+
+
+- The best cut offs for trimming the data to ensure overlap in propensity scores between treatment and control prior to doing an analysis with inverse propensity score weighting (IPW) are ~0.1 and ~0.78
+
+# 5
+
+We use IPW in regression to estimate the ATE of the training program.
+
+
+
+```{r}
+lm(engagement_score ~ intervention + department_id + tenure + n_of_reports + gender + role + last_engagement_score + department_score + department_size,  
+   weights = ipw, 
+   data = filter(d, ps > .1 & ps < .78)) |>
+  summary()
+```
+
+
+
+- The estimated ATE using IPW in regressions for intervention is 0.27.
+
+Now we perform bootstrap analysis to achieve even more robust results.
+
+
+
+```{r}
+
+# initialize the vector of simulated estimates
+boot_dist <- NA
+
+for(i in 1:200){
+
+  # initialize the bootstrap sample
+  boot_samp <- slice_sample(.data = d, prop = 1, replace = T) # check ?slice_sample
+
+  # Estimate propensity scores
+  ps_model <- glm(intervention ~ department_id + tenure + n_of_reports + gender + role + last_engagement_score + department_score + department_size, 
+                family = "binomial", 
+                data = boot_samp) # use the bootstrap sample here
+  
+  # Predict probabilities.  Use type = "response".
+  boot_samp$ps <- predict(ps_model, type = "response") 
+  
+  # Calculate IPW
+  boot_samp <- boot_samp |>
+    mutate(ipw = ifelse(intervention == 1, 1/ps, 1/(1 - ps)))
+  
+  # Estimate effects using ipw as weights but trim out the lowest and highest ps
+  fit <- lm(engagement_score ~ intervention + department_id + tenure + n_of_reports + gender + role + last_engagement_score + department_score + department_size,  
+            weights = ipw, 
+            data = filter(boot_samp, ps > .05 & ps < .95))  # make a guess about trimming
+  
+  # Store estimated ATE
+  boot_dist[i] <- avg_comparisons(fit, 
+                                variables = "intervention",
+                                wts = "ipw")$estimate 
+
+   #print(i) # make sure to comment this out before compiling!
+}
+
+# We calculate the non-parametric bootstrap estimate:
+quantile(boot_dist, probs = c(.025, .5, .975), na.rm = TRUE) 
+
+# There is also a parametric bootstrap that uses SD as SE
+se <- sd(boot_dist)
+mean(boot_dist) - 1.96 * se # lower bound
+mean(boot_dist) + 1.96 * se # upper bound
+
+
+```
+
+
+- The bootstrapped 95% confidence interval for the ATE is [0.24, 0.31].
+
+# 6
+
+We use full matching to create weighted synthetic treatment and control groups and we estimate ATE using G-Computation from the `marginaleffects` package.
+
+
+
+```{r}
+# 1. Create the matchit object with glm as the (default) method for estimating propensity scores
+m_full <- matchit(formula = intervention ~ department_id + tenure + n_of_reports + gender + role + last_engagement_score + department_score + department_size,
+                 data = d,
+                 method = "full") # method = "quick" is an optimized version of "full"
+
+# 2. Evaluate balance
+summary(m_full)
+
+plot(summary(m_full))
+
+# 3. Create the matched data
+(matched_full <- match.data(m_full))
+
+# 4. Do the analysis using the weights that have been added to the matched data
+model <- lm(engagement_score ~ intervention + department_id + tenure + n_of_reports + gender + role + last_engagement_score + department_score + department_size,  
+   data = matched_full,  
+   weights = weights)
+  summary(model)
+```
+
+
+
+Use marginal effects package to back out the treatment effect from this complicated model.
+
+
+
+```{r}
+avg_comparisons(model,
+                variables = "intervention", #  identify the treatment variable
+                wts = "ipw")$estimate # extract the estimate
+```
+
+
+- The estimated ATE using full matching is 0.26.
+
+Now we perform bootstrap analysis to achieve even more robust results.
+
+
+
+```{r}
+
+# initialize the vector of simulated estimates
+boot_dist <- NA
+
+for(i in 1:200){
+
+  # initialize the bootstrap sample
+  boot_samp <- slice_sample(.data = d, prop = 1, replace = T) # check ?slice_sample
+
+  # Estimate propensity scores
+  ps_model <- glm(intervention ~ department_id + tenure + n_of_reports + gender + role + last_engagement_score + department_score + department_size, 
+                family = "binomial", 
+                data = boot_samp) # use the bootstrap sample here
+  
+  # Predict probabilities.  Use type = "response".
+  boot_samp$ps <- predict(ps_model, type = "response") 
+  
+  # Calculate IPW
+  boot_samp <- boot_samp |>
+    mutate(ipw = ifelse(intervention == 1, 1/ps, 1/(1 - ps)))
+  
+  # Estimate effects using ipw as weights but trim out the lowest and highest ps
+  fit <- lm(engagement_score ~ intervention + department_id + tenure + n_of_reports + gender + role + last_engagement_score + department_score + department_size,  
+            weights = ipw, 
+            data = filter(boot_samp, ps > .05 & ps < .95))  # make a guess about trimming
+  
+  # Store estimated ATE
+  boot_dist[i] <- avg_comparisons(fit, 
+                                variables = "intervention",
+                                wts = "ipw")$estimate 
+
+   #print(i) # make sure to comment this out before compiling!
+}
+
+# We calculate the non-parametric bootstrap estimate:
+quantile(boot_dist, probs = c(.025, .5, .975), na.rm = TRUE) 
+
+# There is also a parametric bootstrap that uses SD as SE
+se <- sd(boot_dist)
+mean(boot_dist) - 1.96 * se # lower bound
+mean(boot_dist) + 1.96 * se # upper bound
+```
+
+- The bootstrapped 95% confidence interval for the ATE is [0.23, 0.31].
+
+# 7
+
+Nextech launched a managerial training program to improve team engagement, but participation was non compliant raising concerns about confounding. Managers who opted into training may differ systematically from those who didn’t, in ways that also affect engagement outcomes. Key confounders include tenure, prior engagement scores, team size, department-level climate, and demographic factors like role and gender. These variables most probably influence both the treatment and the engagement scores we aim to measure.
+
+The best approach to estimate the effect of the managerial training program was to perform bootstrapping using Inverse Probability Weighting and full matching. These are the best and most robust results since bootstrapping accounts for estimating variability by creating many samples and estimating the effect with each sample, Also, IPW and full matching use all the data and not just a subset of the matched data. Their estimates also agree and were very similar with bootstrapped 95% confidence interval of [0.23, 0.31] using full mathing and [0.24, 0.31] using IPW.

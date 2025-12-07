@@ -1,0 +1,156 @@
+
+---
+title: "Assignment 4 Fluent.io Case"
+author: "Sebastian Perez Parra"
+date: "2025-09-14"
+format: 
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    toc-title: "Contents"
+    embed-resources: true
+execute:
+  include: true
+  eval: true
+  error: false    
+  warning: false
+  message: false
+
+---
+We start by loading the necessary libraries and the dataset.
+
+
+```{r load libraries}
+#load libraries
+library(tidyverse)
+library(rpact)
+```
+
+```{r load dataset}
+#load historical data
+d <- read_csv("https://raw.githubusercontent.com/jefftwebb/data/main/fluent_historical.csv")
+```
+
+
+# 1 
+
+We begin using the data to calculate average revenue per user (ARPU) and the standard deviation of revenue per user (SDRPU).
+
+To do this we take the average of the sum. We calculate per customer average and then aggregate that to a monthly average. We take the average of those monthly averages. Monthly ARPU is the average amount customers spend in a month.
+
+
+```{r ARPU}
+d %>%
+  group_by(customer_id, month) %>% #group by customers
+  summarise(user_avg = sum(paid), .groups = "drop") %>% #calculate average spending for each customer
+  summarise(ARPU = mean(user_avg), SDRPU = sd(user_avg))
+```
+
+- The historical average revenue per user (ARPU) is $2.83 and the standard deviation of revenue per user (SDRPU) is $10.94.
+
+
+# 2
+
+Now we calculate the required sample size for for a traditional fixed duration A/B test, assuming ARPU of $3.00, MEI of $.50 and SDRPU of $11.00.
+
+```{r sample size}
+power.t.test(delta = 0.5, #raw differences between means
+             sd = 11,
+             sig.level = 0.05,
+             power = 0.8,
+             alternative = "one.sided")
+```
+
+- The required sample size is 5,986 customers in each group, 11,972 customers in total for the experiment.
+
+
+# 3
+
+We calculate the required duration in days for this A/B test assuming (1) The sample size from the previous question and (2) the average number of subscribers who would be new to the experiment each day,
+
+```{r total visitors in experiment and avg new visitors per day}
+#calculate total visitors
+
+total_vis = 5986*2
+
+#calculate average new customers to the experiment
+
+avg_vis = d %>%
+  filter(type == "subscription") %>%
+  group_by(customer_id) %>%
+  summarise(first_session = min(date)) %>%
+  count(first_session) %>%
+  summarise(avg = mean(n)) %>%
+  pull(avg) %>%
+  ceiling()
+```
+
+
+
+```{r duration}
+#calculate duration
+
+ceiling(total_vis / avg_vis)
+```
+
+- The test will need to run for 140 days to ensure enough data to draw statistically valid conclusions.
+
+# 4
+
+*Can you use CUPED to reduce sample size and duration for this experiment?*
+
+- CUPED reduces variance by calculating within customer effect. Although the data is zero inflated giving us a large dataset, in this case, we are not tracking within-user change but focused on increasing total revenue from customers (although still using ARPU as our metric). Since a new tier was introduced in the experiment, this affects stable and comparable customers and their correlation since the Pro tier will have new subscribers. For these reasons, CUPED is not ideal for this business requirement.
+
+
+# 5
+
+Now we size the experiment for a group sequential test with 4 checkpoints. The parameters will be the same: ARPU of $3.00, MEI of $.50 and SDRPU of $11.00. Alpha and beta spending will be defined with O’Brien-Fleming. We keep alpha at .05 and power at .8.
+
+```{r test}
+library(rpact)
+?getDesignGroupSequential
+?getSampleSizeMeans
+
+getDesignGroupSequential(typeOfDesign = "asOF", kMax = 4,
+        alpha = 0.05, beta = .2, typeBetaSpending = "bsOF") |>
+    getSampleSizeMeans(alternative = 0.5, stDev = 11) |>
+    summary() 
+```
+- The sample size at the first checkpoint is 3,460, at the second checkpoint 6,918, at the third checkpoint 10,376 and at the fourth checkpoint 13,834 (round up to the nearest even number).
+
+- The expected number of subjects if H1 is true is 10,006.
+
+```{r duration 2}
+ceiling(10006 / avg_vis)
+```
+
+- The duration of the experiment given the expected sample size under H1 is 117 days.
+
+
+# 6
+
+Now, we suppose that the true effect of the treatment is $.25. We calculate the probability given this group sequential design that the experiment could be stopped early.
+
+```{r test 2}
+library(rpact)
+?getDesignGroupSequential
+?getSampleSizeMeans
+
+getDesignGroupSequential(typeOfDesign = "asOF", kMax = 4,
+        alpha = 0.05, beta = .2, typeBetaSpending = "bsOF") |>
+    getSampleSizeMeans(alternative = 0.25, stDev = 11) |>
+    summary() 
+```
+- The probability for early stopping under H0 (the assumption of no difference between the group means) is 90.5%.
+
+# 7
+
+- The Fluent.io team proposes an A/B experiment to evaluate whether introducing a Pro subscription tier increases revenue. The null hypothesis states that the new pricing structure does not increase revenue while the alternative suggests it does making this a one-sided test. The calculated ARPU is $2.83 and SDRPU $10.9. The experiment was set with an MEI at $.50, alpha at 0.05 and power at 0.8. Beta and alpha spending were defined with the O’Brien-Fleming function. 
+
+- The required sample size for a fixed-duration test is 11,972 users, which takes 140 days. A group sequential design with four checkpoints reduces expected sample size to 10,006 and shortens duration to 117 days, while allowing early stopping.
+
+- The probability for early stopping given the results under H0 (the assumption of no difference between the group means) is 90.5%. This gives us enough statistical significance that fluent.io should continue with their regular operations (without the introduced Pro tier). 
+
+- There may be threats to validity included such as a history threat where seasons affect customer spending, a maturation threat where customers start diving into Pro after some time, an instrumentation threat where Pro could have not performed as expected. We may have the Weird problem where treatment effects vary by setting (location).
+

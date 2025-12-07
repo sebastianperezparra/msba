@@ -1,0 +1,764 @@
+---
+title: "Webinar 7"
+format: 
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    toc-title: "Contents"
+    embed-resources: true
+execute:
+  include: true
+  eval: true    
+  warning: false
+  message: false
+---
+
+```{r}
+#| include: false 
+
+# This is a chunk level instruction that will override echo: true and eval: true
+# in the yaml header.
+
+# Efficient package loading with pacman:
+# install.packages("pacman")
+
+pacman::p_load(tidyverse, MatchIt, marginaleffects, caret, ranger, grf)
+
+# caret: basic machine learning UI in R
+# ranger: fast random forest
+# grf (generalized random forest): implementation of causal forest
+```
+
+
+# Agenda
+
+- Quarto formatting.  This has improved but some are still producing Frankenstein output.  
+    - See the above minimalistic yaml header for a Quarto document with ToC and warning and message suppression.
+    - Chunk level control uses, eg, #| include: false.  See above example.
+    - Efficient package loading with pacman.  See above.
+- Review Management Training case
+- Overview: Heterogeneous treatment effects (the topic for module 7)
+- Prepare for Shophub case: estimate the *individual* response to an email marketing campaign using meta-learners:
+    - S learner
+    - T learner 
+    - R learner (causal forest)
+
+
+# Review Management Training Case
+
+Matching seeks to mimic random assignment after non-random assignment has already taken place.  The point is to make the groups *exchangeable* so that the difference in group averages is (hopefully) due to the treatment rather than a confounder. Basically we are creating twins in the treatment and control groups.  
+
+We match by *selecting* observations that match (discarding the ones that don't) or by *weighting* all the observations using propensity scores.
+
+## Q1 
+
+Estimate the average treatment effect (ATE) by calculating the difference in mean engagement scores for treatment vs. control. 
+
+```{r}
+
+d <- read.csv("https://raw.githubusercontent.com/jefftwebb/data/main/management_training.csv")
+
+lm(engagement_score ~ intervention, data = d)
+
+```
+
+Need to identify the effect rather than just outputting the regression!
+
+## Q2.  
+
+Estimate ATE with multiple regression, adjusting for possible confounders.  Explain what the change in estimated treatment effect says about the directional bias in your previous estimate. Explain that bias.
+
+```{r}
+# ATE model combining assignment and outcome
+lm(engagement_score ~ intervention + 
+     factor(department_id) + 
+     tenure + 
+     n_of_reports + 
+     factor(gender) +  
+     # factor(role) + # I left out role because it was collinear with department
+     # department_score + # also collinear
+     # department_size + # also collinear
+     last_engagement_score, data = d) |>
+  summary()
+```
+
+Model specification is a little tricky.
+
+```{r}
+# or
+
+lm(engagement_score ~ intervention + 
+     # factor(department_id) + 
+     tenure + 
+     n_of_reports + 
+     gender +  
+     factor(role) + 
+     # department_score + # also collinear
+     # department_size + # also collinear
+     last_engagement_score, data = d) |>
+  summary()
+
+# But NOT this:
+
+lm(engagement_score ~ intervention + 
+     department_id + 
+     tenure + 
+     n_of_reports + 
+     gender +  
+     role + 
+     department_score + 
+     department_size + 
+     last_engagement_score, data = d) |>
+  summary()
+
+# what is wrong with this model?
+
+```
+
+Need to make a comment about the directionality and source of the bias. 
+
+## Q3
+
+Use *coarsened exact matching* (CEM) to create synthetic treatment and control groups for estimating the treatment effect. (Because the matched data has discarded both treatment and control units you won't be estimating the ATE or the ATT---average effect on the treated--- but rather the average treatment effect in the remaining matched sample or ATM.). Estimate the treatment effect (ATM) using the matched sample.
+
+1. Do the matching with CEM using MatchIt's default bin creation
+    
+```{r}
+# Fit the assignment model
+m_out_cem <- matchit(formula = intervention ~ 
+                   factor(department_id) + # or factor(role) instead; these are collinear
+                   tenure + 
+                   n_of_reports + 
+                   factor(gender) +
+                   last_engagement_score,
+                   data = d,
+                   cutpoints = "sturges",
+                   method = "cem")
+```
+
+2. Evaluate the matches.  The difference between the groups should lessen.
+
+```{r}
+# numerical summary
+summary(m_out_cem)
+
+# visual summary
+plot(summary(m_out_cem))
+```
+
+3. Create matched data
+
+```{r}
+matched_data <- match.data(m_out_cem)
+
+```
+
+4. Analyze: fit an assignment model using all the matching variables + weights.  This provides a final adjustment if needed.
+
+```{r}
+# Fit outcome model
+lm(engagement_score ~ intervention + 
+     factor(department_id) + 
+     tenure + 
+     n_of_reports + 
+     factor(gender) +
+     last_engagement_score, 
+   data = matched_data,
+   weights = weights) |> # note weights argument. 
+  # slight difference -- .222 -- if not including weights
+  summary() 
+
+lm(engagement_score ~ intervention, 
+     data = matched_data,
+   weights = weights) |> # note weights argument. 
+  summary()
+
+```
+
+Unfortunately, Python doesn't have a great implementation of CEM.
+
+## Q4
+
+Calculate and summarize propensity scores for the training program.  What are the best cut offs for trimming the data to ensure overlap in propensity scores between treatment and control prior to doing an analysis with *inverse propensity score weighting* (IPW)?.
+
+1. Fit an assignment model to obtain propensity scores
+
+```{r}
+# Fit the assignment model
+ps <- glm(intervention ~ factor(department_id) + 
+            tenure + 
+            n_of_reports + 
+            factor(gender) + 
+            last_engagement_score,
+          data = d, 
+          family = binomial) # don't forget this!
+```
+
+2. Add the propensity scores to the data.
+```{r}
+d$ps <- predict(ps, type = "response")
+
+```
+
+3. Compare propensity scores
+```{r}
+# summary could be a plot or a table, to figure out the region of shared support
+summary(filter(d, intervention == 1)$ps)
+summary(filter(d, intervention == 0)$ps)
+
+```
+
+A good choice for trimming would be at [.1, .9].  Although, taking a step back, the point of trimming is to avoid extreme IPW values, which would have undue influence in weighted regression.  Here, not much difference between .096 and .1 or .93 and .9.  Trimming may not be essential!  
+
+- Upside to trimming:  *better internal validity* --- better estimates (potentially)
+- Downside to trimming:  *worse external validity* --- can only claim ATM rather than ATE
+
+Best practice would be to do sensitivity analysis: compare results with and without trimming.
+
+## Q5
+
+Use IPW in regression to estimate the ATE of the training program. Report ATE as well as bootstrapped 95% confidence intervals for ATE.
+
+We use bootstrap to combine uncertainty from both assignment model and outcome model.  This is fairly slow. I've included some tactics to speed it up.
+
+Here are the steps:
+
+```{r}
+## Bootstrap
+
+# Define the number of iterations
+n <- 500 # 1000 would be better, honestly 
+
+# initialize bootstrap distribution
+boot_dist <- 1:n
+
+# Speed up tactics to consider
+
+# 1. put factor levels directly into the data
+# d_new <- d |>
+#   mutate(role = factor(role),
+#          department_id = factor(department_id), 
+#          gender = factor(gender))
+  
+# 2. # Precompute all bootstrap dataframes in a list
+# set.seed(123)
+# boot_samples <- replicate(500, sample_frac(d, 1, replace = TRUE), simplify = F)
+
+# 3. parallel processing
+
+# Run loop
+for(i in 1:n){ 
+  
+  # use the pre-computed sample
+  boot_samp <- sample_frac(d, 1, replace = TRUE)
+  
+  # fit assignment model with logistic regression
+  ps <- glm(intervention ~ factor(department_id) + 
+              tenure + 
+              n_of_reports + 
+              factor(gender) +
+              last_engagement_score, 
+            data = boot_samp, # essential to be using the bootstrap sample
+            family = binomial)
+ 
+  # predict propensity scores (fitted values)
+  boot_samp$ps <- predict(ps, type = "response")
+  
+  # calculate IPW
+  boot_samp$ipw <- ifelse(boot_samp$intervention == 1, 1/boot_samp$ps, 1/(1-boot_samp$ps))
+
+  # fit outcome model with weights 
+  boot_mod <- lm(engagement_score ~ intervention +
+                   factor(department_id) + 
+                   tenure + 
+                   n_of_reports + 
+                   factor(gender) +  
+                   last_engagement_score, 
+                 weights = ipw, 
+                 data = boot_samp) # we won't bother to trim
+  
+  # Store the coefficient for intervention
+  boot_dist[i] <- boot_mod$coefficients["intervention"]
+
+  cat(i, " ")
+
+}
+
+quantile(boot_dist, probs = c(.025, .5, .975)) # [.23, .27, .3]
+
+```
+
+
+# Q6
+
+Use *full matching* to create weighted synthetic treatment and control groups. Estimate ATE using G-Computation in the `marginaleffects` package.  Report ATE as well as bootstrapped 95% confidence intervals for ATE.
+
+This was very slow! For computational reasons, it may make sense to go with IPW.
+
+It was key to use `method = "quick"`.  
+    
+Note that the matching operation must go within the loop.
+
+```{r}
+
+n <- 500 
+boot_dist <- 1:n
+
+for(i in 1:n){
+  
+  # take boot strap sample
+  boot_samp <- sample_frac(d, 1, replace = T)
+  
+  # Do matching
+  m_out <- matchit(intervention ~ factor(department_id) + 
+                     tenure + 
+                     n_of_reports + 
+                     factor(gender) + 
+                     last_engagement_score, 
+            data = boot_samp, 
+            method = "quick") # this is faster than "full"
+  
+  matched_full <- match.data(m_out)
+ 
+  # fit outcome model with interactions
+  boot_mod <- lm(engagement_score ~ intervention * 
+                   (factor(department_id) + 
+                      tenure + 
+                      n_of_reports + 
+                      factor(gender) +  
+                      last_engagement_score), 
+                 weights = weights, 
+                 data = matched_full)
+  
+  # Store the coefficient for intervention
+  boot_dist[i] <- avg_comparisons(boot_mod,
+                                  variables = "intervention", 
+                                  wts = "weights")$estimate 
+
+  cat(i, " ")
+
+}
+
+```
+
+One problem is that the implementation of G-computation in the marginaleffects package is pretty slow. We can compute it more quickly by hand. Under the hood, marginaleffects is using a method called predictive comparison:
+
+1. Fit an outcome model *with interactions*.
+2. Predict the target with intervention set to 0. 
+3. Predict the target with intervention set to 1. 
+4. Calculate the weighted average of the differences.
+
+Here is the bootstrap again:
+
+```{r}
+
+n <- 500 
+boot_dist <- 1:n
+
+for(i in 1:n){
+  
+  # take bootstrap sample
+  boot_samp <- sample_frac(d, 1, replace = T)
+  
+  # Do matching
+  m_out <- matchit(intervention ~ factor(department_id) + 
+                     tenure + 
+                     n_of_reports + 
+                     factor(gender) + 
+                     last_engagement_score, 
+            data = boot_samp, 
+            method = "quick") # this is faster than "full"
+  
+  matched_full <- match.data(m_out)
+ 
+  # fit outcome model with interactions 
+  boot_mod <- lm(engagement_score ~ intervention * 
+                   (factor(department_id) + 
+                      tenure + 
+                      n_of_reports + 
+                      factor(gender) +  
+                      last_engagement_score), 
+                 weights = weights, 
+                 data = matched_full)
+  
+  # Store the coefficient for intervention
+  boot_dist[i] <- weighted.mean(
+      predict(boot_mod, 
+              newdata = mutate(matched_full, intervention = 1)) - 
+      predict(boot_mod, 
+              newdata = mutate(matched_full, intervention = 0)),
+      w = matched_full$weights
+      ) 
+
+  cat(i, " ")
+
+}
+
+quantile(boot_dist, probs = c(.025, .5, .975)) # [.21, .25, .3]
+```
+
+Main takeaways:
+
+- Matching makes effect estimation doubly robust, reducing the consequences for model misspecification, in either the assignment model or the outcome model.  
+- We need bootstrapping to calculate confidence intervals (or SE) that account for ALL the sources of uncertainty.
+- The method for calculating effects from complex models, G-computation, is actually just predictive comparison.
+
+# Heterogeneous treatment effects
+
+Why focus on heterogeneous treatment effects?  Two main reasons:
+
+1. Allows us to answer a different kind of question than ATE: not "was the treatment effective?" but "how did individual customers respond?"  (We can still estimate ATE, and will, but the approach is different from the procedure with experiments or matching.)
+
+2. Allows us to segment customers by treatment response rather than predicted outcome: not "will the customer churn?" but "will the customer respond to a retention offer?"  These are very different questions!
+
+The fundamental problem of causal inference is that unit level casual effects can't be calculated because one of the the potential outcomes will not be observed. The work-around in experiments is to calculate ATE as a difference in group averages: the average response among the treated minus the average response among the untreated. Essentially we use the control group to estimate the counterfactual for the treatment group---what would have happened, on average, without the treatment.  This is why it is so important that the groups are exchangeable.
+
+The idea behind this module---and the idea behind recent developments in metalearners such as the S, T, and R learners---is that *if we estimate the potential outcomes for each unit then the difference between them can serve as an estimate of the unit level causal effect*.  Thus, rather than only estimating ATE we estimate CATE at the individual or subgroup level. CATE at the individual level is a special case often referred to as the individual treatment effect or ITE. Estimating ITE in particular has a lot of appeal for targeting an intervention to those most likely to respond. 
+
+We can still estimate ATE.  But rather than calculating it as the difference in group averages (as we do after an experiment or after matching) it will be the *average unit level difference between estimated potential outcomes*.  
+
+In other words, not a difference of observed group averages:
+
+$$\widehat{ATE} = E[Y_{T=1}] - E[Y_{T =0}]$$
+
+But an average of *estimated* individual differences:
+
+$$\widehat{ATE} = E[\hat{Y}_{T = 1} - \hat{Y}_{T = 0}] $$
+
+If we don't take the average difference then we have the estimated individual responses:  
+
+$$\widehat{ITE} = \hat{Y}_{T = 1} - \hat{Y}_{T = 0} $$
+These are heterogeneous treatment effects.
+
+We will often use machine learning to model potential outcomes.  These algorithms work well for modeling complex data and automatically identifying interactions and other non-linear relationships.  However, it is crucial to note that predicting an outcome---which is what machine learning is typically used for---is quite different from estimating or predicting a *treatment response*.  
+
+Example:
+
+We could create a model of customer churn, predict which customers have a high probability churning and then make them a retention offer. The problem is that customers might churn for reasons that would make them uninterested in the offer.  Suppose we are a local gym. And suppose customers are predicted to leave but are leaving due to moving out of state.  Making them an offer would be pointless: they won't respond to the treatment. They plan to leave, get the treatment, and leave.  The question we really want to answer is: which customers will have the largest treatment response?  They plan to leave, get the treatment, and then choose to keep their membership. Notice that in the case of people who were planning to stay, and do stay, there is no treatment effect.  
+
+*Predicting an outcome may be better than nothing but is often used to answer the wrong question.*
+
+# Meta-learners
+
+Simulated data will enable us to compare methods.  Which one will get us closest to the defined tau? 
+
+The following function generates synthetic observational data with both confounding and heterogeneous treatment effects. 
+
+- Treatment assignment depends on X[,1] through a threshold: observations with X[,1] > 0 have 60% treatment probability versus 40% for X[,1] < 0. 
+
+- X[,1] also determines the treatment effect itself---the effect is zero when X[,1] < 0 and increases linearly with X[,1] when positive (scaled by tau). 
+
+
+```{r}
+
+# This function generates nonlinear confounded data with varying treatment effect
+
+make_confounded_data <- function(seed = 123, n = 2000, p = 10, tau = 2) {
+  # Parameters:
+  #   seed: Random seed for reproducibility (default: 123)
+  #   n: Number of observations (default: 2000)
+  #   p: Number of covariates (default: 10)
+  #   tau: Scaling factor for treatment effect (default: 2)
+  
+  set.seed(seed)
+  
+  X <- matrix(rnorm(n * p), n, p)
+  # Generates a matrix X of covariates/predictors
+  # n rows (observations), p columns (covariates)
+  # Values drawn from standard normal distribution
+  
+  Treatment <- rbinom(n, 1, 0.4 + 0.2 * (X[, 1] > 0))
+  # Generates binary treatment assignment
+  # Probability of treatment is 0.4 if X[,1] <= 0, and 0.6 if X[,1] > 0
+  # This introduces confounding as treatment depends on X[,1]
+  
+  Y <- tau * pmax(X[, 1], 0) * Treatment + X[, 2] * 2 + pmin(X[, 3], 0) + rnorm(n)
+  # Generates outcome Y:
+  #   tau * pmax(X[, 1], 0) * Treatment: Varying treatment effect, scaled by tau
+  #   tau will be 0 when X[, 1] is < 0, then will increase linearly when > 0
+  #   X[, 2]: Direct effect of second covariate
+  #   pmin(X[, 3], 0): Effect of third covariate, only if negative
+  #   rnorm(n): Random noise
+  
+  data.frame(Y, Treatment, X)
+  # Returns a data frame:
+  #   Y: Outcome variable
+  #   Treatment: Binary treatment assignment
+  #   X: All covariates
+}
+
+(cd <- make_confounded_data())
+
+```
+
+
+You might be unfamiliar with `pmax()` and `pmin()`.  These are element-wise maximum and minimum functions.
+
+- `pmax(X[, 1], 0)` returns X[, 1] when X[, 1] is positive, and 0 otherwise. 
+- `pmin(X[, 3], 0)` is used to cap the effect of X[, 3] at zero. It returns X[, 3] when X[, 3] is negative, and 0 otherwise. This means that only negative values of X[, 3] have an effect on the outcome Y.
+
+Here is an estimate of the ATE:
+
+```{r}
+lm(Y ~ ., data = cd)
+```
+
+This estimate is a difference in group means, controlling for possible confounders: X1 - X10.  
+
+Metalearners take a different approach: first estimate ITE and then average ITE across all units for the ATE.
+
+## S-learner
+
+"S" stands for "single model." The steps for creating an S learner are:
+
+1. Fit a model of the outcome, with the treatment variable as one of the predictors.
+2. Predict potential outcomes $\hat Y (0)$ and $\hat Y (1)$ using the model.  Do this by creating new versions of the data for the predictions, one version with the treatment indicator set to 0 (to predict $\hat Y (0)$) and the other version with the treatment indicator set to 1 (to predict $\hat Y (0)$).
+3. Calculate ITE for each observation as $\hat Y (1) - \hat Y (0)$.
+
+We will start by using a linear model as the base learner.
+
+```{r}
+# Fit the model
+s <- lm(Y ~ ., data = cd)
+
+# Predict individual outcomes for the two groups using the single model
+Y1 <- predict(s, newdata = cd |> mutate(Treatment = 1))
+Y0 <- predict(s, newdata = cd |> mutate(Treatment = 0))
+
+# Calculate ITE, taking the first ten observations only for illustration
+Y1[1:10] - Y0[1:10]
+
+# Calculate ATE from ITE
+mean(Y1 - Y0)
+```
+
+Here is a plot of plot of the predicted tau by X1 with a line indicating the tau we defined in the simulation:
+- When X[,1] <= 0, the treatment effect is 0
+- When X[,1] > 0, the treatment effect is tau * X[,1]
+
+```{r}
+cd |>
+  mutate(tau = predict(s, newdata = cd |> mutate(Treatment = 1)) - predict(s, newdata = cd |> mutate(Treatment = 0)),
+         true_effect = ifelse(X1 <= 0, 0, 2 * X1)) |>
+  ggplot(aes(X1, tau)) +
+  geom_point(col = "red") +
+  geom_line(aes(X1, true_effect), col = "black") +
+  theme_minimal() +
+  labs(title = "Tau by X1 with linear base S-Learner",
+       subtitle = "True effect in black")
+  
+```
+
+The ITE is constant across individuals because the slope of the regression line representing the treatment effect is not allowed to vary in a model with main effects only. If, instead, we include interactions, then the slope will vary:
+
+```{r}
+# Fit the model
+s_nonlinear <- lm(Y ~ Treatment * ., data = cd)
+
+# Calculate ITE
+predict(s_nonlinear, newdata = cd |> mutate(Treatment = 1))[1:10] - 
+  predict(s_nonlinear, newdata = cd |> mutate(Treatment = 0))[1:10]
+
+#Calculate ATE from ITE
+mean(predict(s_nonlinear, newdata = cd |> mutate(Treatment = 1)) - 
+  predict(s_nonlinear, newdata = cd |> mutate(Treatment = 0)))
+
+```
+
+The point here is that, although the interactions don't really improve the ATE estimate, we are getting individual differences in treatment effects.
+
+Here is a plot:
+
+```{r}
+cd |>
+  mutate(tau = predict(s_nonlinear, newdata = cd |> mutate(Treatment = 1)) - 
+           predict(s_nonlinear, newdata = cd |> mutate(Treatment = 0)),
+         true_effect = ifelse(X1 <= 0, 0, 2 * X1)) |>
+  ggplot(aes(X1, tau)) +
+  geom_point(col = "red") +
+  geom_line(aes(X1, true_effect), col = "black") +
+  theme_minimal() +
+  labs(title = "Tau by X1 with nonlinear base S-Learner",
+       subtitle = "True effect in black")
+  
+```
+
+These interactions are just guesses.  Maybe it makes sense to use a tree model as the base S-learner to automatically discover non-linear relationships from the data. For demonstration we will use the caret package to interact with the ranger package (for fast random forest fitting).
+
+```{r}
+# Set the seed because random forest includes stochastic elements
+set.seed(123)
+
+# Define the cross validation method
+train_control <- trainControl(method = "cv", number = 5)
+
+# fit the model
+rf_mod <- train(Y ~.,
+                data = cd,
+                method = "ranger",
+                trControl = train_control)
+
+# ITE
+predict(rf_mod, newdata = cd |> mutate(Treatment = 1))[1:10] - 
+  predict(rf_mod, newdata = cd |> mutate(Treatment = 0))[1:10]
+
+# ATE
+mean(predict(rf_mod, newdata = cd |> mutate(Treatment = 1)) - 
+  predict(rf_mod, newdata = cd |> mutate(Treatment = 0)))
+
+```
+
+Here is a plot of the predicted tau by X1:
+
+```{r}
+cd |>
+  mutate(tau = predict(rf_mod, newdata = cd |> mutate(Treatment = 1)) - predict(rf_mod, newdata = cd |> mutate(Treatment = 0)),
+         true_effect = ifelse(X1 <= 0, 0, 2 * X1)) |>
+  ggplot(aes(X1, tau)) +
+  geom_point(col = "red") +
+  geom_line(aes(X1, true_effect), col = "black") +
+  theme_minimal() +
+  labs(title = "Tau by X1 with random forest base S-Learner",
+          subtitle = "True effect in black")
+  
+```
+
+Much better!  This captures the non-linear shape of tau that we defined in the data.
+
+
+## T-Learner
+
+"T" stands for "two." The steps for creating a T learner are:
+
+1. Fit two models of the outcome, one for the treatment group, $M1$, and one for control group, $M0$.  In other words, subset the data by treatment assignment and use that subsetted data to fit the models, $M1$ and $M0$.
+2.  Use the two models to predict potential outcomes for each observation *in the entire dataset*. $\hat Y (0)$ will be the $M0$ predictions and $\hat Y (1)$ will be the $M1$. This means that there will be two predictions (corresponding to the two potential outcomes) for each observation.
+3. Calculate ITE for each observation as $\hat Y (1) - \hat Y (0)$.
+
+```{r}
+# Subset the data
+cd0 <- filter(cd, Treatment == 0) |> select(-Treatment)
+cd1 <- filter(cd, Treatment == 1) |> select(-Treatment)
+
+# Create two models
+rf_mod0 <- train(Y ~.,
+                data = cd0,
+                method = "ranger",
+                trControl = train_control)
+
+rf_mod1 <- train(Y ~.,
+                data = cd1,
+                method = "ranger",
+                trControl = train_control)
+
+# Predict potential outcomes on the entire dataset
+yhat1 <- predict(rf_mod1, newdata = cd)
+yhat0 <- predict(rf_mod0, newdata = cd)
+
+# ITE
+yhat1[1:10] - yhat0[1:10]
+
+# ATE
+mean(yhat1 - yhat0) 
+```
+
+Here is the plot of tau by X1:
+
+```{r}
+cd |>
+  mutate(tau = yhat1 - yhat0,
+         true_effect = ifelse(X1 <= 0, 0, 2 * X1)) |>
+  ggplot(aes(X1, tau)) +
+  geom_point(col = "red") +
+  geom_line(aes(X1, true_effect), col = "black") +
+  theme_minimal() +
+  labs(title = "Tau by X1 with random forest base T-Learner",
+       subtitle = "True effect in black")
+  
+```
+
+## Causal Forest
+
+```{r}
+# Run the causal tree
+(cf <- causal_forest(X = select(cd, -Y, -Treatment), # covariates
+                    Y = cd$Y,                       # outcome
+                    W = cd$Treatment,               # treatment indicator
+                    seed = 123))
+
+# Get ITE
+predict(cf)$predictions[1:10]
+
+# Get ATE
+average_treatment_effect(cf, target.sample = "all") 
+
+```
+
+Here is the plot:
+
+```{r}
+cd |>
+  mutate(tau = predict(cf)$predictions,
+         true_effect = ifelse(X1 <= 0, 0, 2 * X1)) |>
+  ggplot(aes(X1, tau)) +
+  geom_point(col = "red") +
+  geom_line(aes(X1, true_effect), col = "black") +
+  theme_minimal() +
+  labs(title = "Tau by X1 with causal forest",
+       subtitle = "True effect in black")
+  
+```
+
+Much tighter range of predictions (greater precision).  Why are the predictions struggling for X1 > 2? This might be a fundamental limitation of tree-based causal methods at distribution extremes. The question is: Does it matter for your application?  For uplift modeling / customer targeting: Relative rankings are correct, and the direction of effects is correct.
+
+General take-aways:
+- Metalearners may not do much better than a regression model at estimating ATE
+- They excel at estimating ITE
+
+# Prepare for Shophub Case
+
+Scenario:  Need to optimize email marketing by shifting focus from customers with high purchase probability to those causally influenced by emails ("persuadables"). The team will use historical data to model heterogeneous treatment effects, estimating individual-level impacts of promotional emails on purchase volume. 
+
+Experimental data:
+```{r}
+
+read.csv("https://raw.githubusercontent.com/jefftwebb/data/main/experimental_email_data.csv")
+```
+
+Observational data:
+```{r}
+
+read.csv("https://raw.githubusercontent.com/jefftwebb/data/main/observed_email_data.csv")
+```
+
+Data dictionary:
+```{r}
+read.csv("https://raw.githubusercontent.com/jefftwebb/data/main/email_data_dictionary.csv")
+```
+
+1. What is the ATE in the experimental data? Report a point estimate as well as a 95% confidence interval for the effect.
+
+2. Use the observational data to estimate the ATE using multiple regression.
+
+3. Using the observational data create an S learner, with linear regression as the base learner.
+    - The estimated CATE for each individual (that is, the ITE) in this linear S learner model is a constant. Why is that?
+    - What is the estimated ATE from this model?
+
+4. Repeat the analysis from the previous question, this time using random forest as the base learner. Warning: the model will take a long time to fit! I recommend you choose a less computationally intensive cross validation setting than is typical—such as 5-fold cross validation. Remember to set the seed to make your results reproducible.
+    - How would you use the CATE estimates for each individual from this model to identify persuadables?
+    - What is the estimated ATE from this model? How does it compare to the ATE as estimated by multiple linear regression, and to the ATE from the experimental data?
+
+5. Use the observational data to create a T learner, with random forest as the base learner.
+    - List the first 10 unsorted CATE/ITE estimates from the model.
+    - What is the estimated ATE from this model? How does it compare to the ATE as estimated by multiple linear regression, and to the ATE from the experimental data?
+
+6. Estimate CATE/ITE and ATE with the observational data using a causal forest model.
+    - List the first 10 unsorted CATE/ITE estimates from the model.
+    - What is the estimated ATE from this model? How does it compare to the ATE as estimated by multiple linear regression, and to the ATE from the experimental data?
+
+7. Summarize your results.
+    - Provide some brief background of the case and your analytic objective.
+    - Which method gets closest to the treatment effect estimated from the experimental data?
+    - Which method should the company use to identify persuadable customers?
+
+

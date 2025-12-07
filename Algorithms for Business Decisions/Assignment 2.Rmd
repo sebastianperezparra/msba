@@ -1,0 +1,226 @@
+---
+title: "Assignment 2 Ubisoft Case"
+author: "Sebastian Perez Parra"
+date: "2025-08-27"
+format: 
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    toc-title: "Contents"
+    embed-resources: true
+execute:
+  include: true
+  eval: true
+  error: false    
+  warning: false
+  message: false
+
+---
+We start by loading the necessary libraries and the dataset.
+
+```{r load libraries}
+#load libraries
+library(tidyverse)
+```
+
+```{r load datasets}
+#load historical data
+ubi_conv <- read_csv("https://raw.githubusercontent.com/jefftwebb/data/main/ubisoft_historical.csv")
+```
+
+1. 
+- The unit of analysis for this experiment is the website visitor to the For Honor game Buy Now page.
+
+
+2. We calculate for the baseline conversion rate for the For Honor game in the historical data. To do so, we start by obtaining the total number of conversions and visitors.
+
+```{r total conversions and visitors}
+#Total number of conversions
+
+total_conv = sum(ubi_conv$Conversions)
+
+#Total number of visitors
+
+total_vis = sum(ubi_conv$Visitors)
+```
+
+```{r baseline conversions}
+#Baseline conversion rate
+
+base_conv = total_conv/total_vis
+
+print(paste("- The baseline conversion rate for the For Honor game in the historical data is", round(base_conv,3)))
+```
+- The baseline conversion rate for the For Honor game in the historical data is 0.049.
+
+3. We calculate for the required sample size in each group in order for the test to detect the specified MEI of 1% in conversions, assuming alpha of .05 and power of .8 in a one-tailed (directional) test
+
+```{r required sample size}
+#The power.prop.test function automatically gives us the required sample size for each group.
+
+power.prop.test(p1= base_conv,
+                p2= base_conv + .01,
+                sig.level= .05,
+                power= .8,
+                alternative = "one.sided")
+```
+
+- The required sample size in each group is 6266 visitors, 12532 visitors in total for the experiment.
+
+
+4. Given the study parameters from the previous question—MEI, alpha and power—and the visitor counts in the historical data, we calculate how long will the test need to run.
+
+```{r total visitors in experiment and avg visitors per day}
+#calculate total visitors
+
+total_vis = 6266*2
+
+#calculate average visitors. WE COULD USE THE MEDIAN OR EVEN MINIMUM AS A MORE CONSERVATIVE CHOICE.
+
+avg_vis = mean(ubi_conv$Visitors)
+```
+
+
+```{r recalculated duration}
+#calculate duration
+
+duration = round(total_vis / avg_vis, 3)
+
+print(paste("- The test will need to run for", duration, "days to ensure enough data to draw statistically valid conclusions. To suffice the required days, we round up and test for 24 days."))
+```
+- The test will need to run for 23.642 days to ensure enough data to draw statistically valid conclusions. To suffice the required days, we round up and test for 24 days.
+
+5. We recalculate sample size and study duration using different settings for alpha and power to allow for fewer false negatives and more false positives.
+
+```{r adjusted sample size}
+#The power.prop.test function automatically gives us the required sample size for each group.
+
+power.prop.test(p1= base_conv,
+                p2= base_conv + .01,
+                sig.level= .1,
+                power= .9,
+                alternative = "one.sided")
+```
+
+```{r recalculated total visitors in experiment and avg visitors per day}
+#calculate total visitors
+
+total_vis1 = 6658*2
+
+#calculate average visitors
+
+avg_vis1 = mean(ubi_conv$Visitors)
+```
+
+
+```{r duration}
+duration = round(total_vis1 / avg_vis1, 3)
+
+print(paste("The test will need to run for", duration, "days to ensure enough data to draw statistically valid conclusions. To suffice the required days, we round up and test for 26 days."))
+```
+- The test will need to run for 25.121 days to ensure enough data to draw statistically valid conclusions. To suffice the required days, we round up and test for 26 days.
+
+- By incresing alpha, we are being more flexible by letting more false positives pass through our test. We allow for more rejections of the null to be able to catch more opportunities of higher conversion rates with the redesigned Buy Now page. We also increased our power (reduced beta) to lower our false negative rate to reduce our chances of rejecting the alternative mistakenly. By increasing alpha, we need less visitors to detect the effect, while increasing power, requires more visitors to get the desired, more strict effect (power) of the treatment.
+
+6. Simulate visitor level data for the test, based on numbers from the historical data, and given the MEI and the test duration calculated in Q4. We use the numbers calculated above:
+
+- MEI: 1% increase in conversions
+ -Power: .8
+- Alpha: .05
+- Visitors: average of 531 per day (calculated from historical data)
+- Duration of test: 24 days
+- Analysis: z-test of proportions
+
+```{r data simulation}
+# arguments:
+# - n: the number of items to draw
+# - size: number of trials.  Bernoulli will always be size = 1
+# - prob: the probability of conversions
+
+# set the seed for reproducibility
+set.seed(123)
+
+# Draw random observations from the distribution
+simulated_conversion <- rbinom(n = 12532, size = 1, prob = .049) 
+
+# Look at the vector
+head(simulated_conversion, 20)
+
+# Calculate the conversion rate
+mean(simulated_conversion)
+
+```
+
+```{r assigning simulated data to groups}
+set.seed(123)
+
+# constants
+test_duration_days <- 24
+avg_visitors_per_day <- 531
+total_visitors <- 12532
+conversion_rate_control <- base_conv  
+conversion_rate_test <- base_conv + .01 # control rate plus MEI
+
+# Initialize a data frame with rows equal to # of total visitors
+visitor_data <- data.frame(id = 1:total_visitors)
+
+# Add simulated group assignment and conversions to visitor_data 
+visitor_data <- visitor_data |>
+  # 1. add a column that randomly assigns each customer to treatment or control 
+  #    with 50% prob
+  mutate(group = sample(x = c("control", "test"), 
+                        size = n(), 
+                        replace = TRUE),
+  # 2. add the conversion rate appropriate to the group assignment
+    conversion_prob = ifelse(group == "control", conversion_rate_control, conversion_rate_test),
+  # 3. add conversion using the rate for either the control or treatment group
+  #    rbinom() accepts a vector of probabilities for the prob argument
+    conversion = rbinom(n = n(), 
+                        size = 1, 
+                        prob = conversion_prob))
+```
+
+We proceed to check that it worked.
+
+```{r simulation check}
+head(visitor_data)
+
+visitor_data |>
+  group_by(group) |>
+  summarize(rate = mean(conversion)) 
+```
+
+We finally check to see if the difference is statistically significant.
+
+```{r prop test}
+# Use prop.test()
+
+# Use a table as the input to prop.test()
+# This is a 2 x 2 matrix giving counts of successes and failures
+
+# Put "test" in first row to test if test > control
+# and make sure the successes are in the first column
+
+table(factor(visitor_data$group, levels = c("test", "control")), 
+      factor(visitor_data$conversion, levels = c(1, 0)))
+
+# prop.test arguments:
+# - x: vector or table giving a count of successes and failures
+# - alternative: "greater" for a directional null hypothesis, meaning test (in
+# the first row) > control (in second)
+
+prop.test(x = table(factor(visitor_data$group, levels = c("test", "control")),
+                    factor(visitor_data$conversion, levels = c(1, 0))), 
+          alternative = "greater") 
+
+```
+
+- With a p-value of 0.002264, we can conclude that the difference in proportions is statistically significant, rejecting the null hypothesis in favor of the null hypothesis. 
+
+- The simulated conversion rate for the treatment group 362/5848 (~0.062) is higher than that of the control group 296/6026 (~0.049) by even a higher conversion rate (~0.013) than what was defined as the Minimum Effect of Interest (MEI). These results show that the simulation and the sample size worked given the assumptions.
+
+7. 
+- To test whether the redesigned Buy Now page (alternative/treatment) for the For Honor game has a higher conversion rate than the current Buy Now page (null/control), we need to perform A/B testing on 12,532 visitors splitted into control and treatment groups equally. The duration of the test will be 24 days.
+
+- We test with a z-test for proportions at a 5% level not looking just for a statistically significant difference in conversion rates, but to satisfy the MEI of 1% increase in conversions for the treatment (from a baseline of 0.0485 to 0.0585). The proportion of conversions in the control and the treatment is our test metric. Our null hypothesis states that there is no difference in conversion rates between the existing Buy Now page (control), and the redesigned Buy Now page (treatment). Our alternative hypothesis is that the treatment does have a higher conversion rate than the control. We finally create a dataset where customers are randomly assigned to control and test with the calculated assumptions of the baseline conversion rate and the the baseline + MEI, to simulate results for our test. The standard alpha and power output successful results while being able to detect the business opportunity of getting 1%+ conversion rates for the redesigned Buy Now page for the For Honor game.

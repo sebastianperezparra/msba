@@ -1,0 +1,340 @@
+---
+title: "Webinar 5"
+format: 
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    toc-title: "Contents"
+execute:
+  warning: false
+  message: false
+---
+
+```{r}
+# Packages
+library(tidyverse)
+
+```
+
+# Agenda
+
+- Discuss midterm exam
+- Fluent.io -- we will review this case in next week's webinar.
+- AI -- more discussion
+- Review for midterm
+
+# Midterm Details
+
+- Use SmarterProctoring
+- 90 minutes
+- 23 questions on the material in modules 1-4
+- The questions will be scenario based, consisting in multiple choice, multiple answer (with the number of answers specified), and occasionally brief essay-style questions. You will get a detailed description of a scenario, followed by questions.
+- The style of the questions will be similar to the scenario quizzes.
+- You will not need a calculator. If you find yourself involved in a ferocious calculation you are probably approaching the problem wrong.
+- There will be no code on the exam, no data analysis. However, that does not mean the exam will be theoretical.  The emphasis will be on *application*.
+- Allowed: One 8.5 x 11 page of notes, 1 blank sheet.
+
+How to study?
+
+- Read through the study guide.
+- Take the practice midterm  This will give you a sense of the style of the exam.
+- Take the review quizzes, which are set to select randomly from a question bank.
+- The transcript to the lecture videos can be downloaded. Have AI develop multiple-choice questions for you based on the lecture transcript. You could also have the AI come up with scenarios and simulate data for analysis.
+- Use the study to make a cheat sheet (as noted above--one 8.5 x 11 page of notes).  Write the cheat sheet *by hand* this helps you remember the material.
+
+
+# Midterm review
+
+There is a midterm study guide on Canvas.
+
+Let's focus the review on these topics:
+
+## Correlation vs. causation (and confounding)
+
+```{r}
+# simulation
+
+set.seed(123)
+temperature <- rnorm(100, mean=75, sd=15)  # confounder
+sales <- 50 + 2*temperature + rnorm(100, sd=10) # depends on temp
+drowning <- 5 + 0.5*temperature + rnorm(100, sd=3) # depends on temp
+
+cor(sales, drowning)  # .87 correlation
+
+# But ice cream doesn't cause drowning! temperature affects both
+
+# effect disappears after controlling for temp
+lm(drowning ~ sales) |> summary()
+lm(drowning ~ sales + temperature) |> summary()
+
+```
+
+The definition of a confounder is a variable that influences both treatment assignment and the outcome. The confounder makes it look like the treatment has an effect, but that is an illusion. In the case of ice cream and drowning, it is weather that causes people to eat ice cream and also to swim. There is no causal relationship between eating ice cream and drowning. It is a spurious correlation.
+
+As we saw in the able.com case controlling for the confounder removes the treatment effect. Why? Because the inclusion of the confounder in the model means that the comparison between treatment and control is done within the levels of the confounder. That removes the influence of the confounder.
+
+The coefficient for the treatment variable is the estimate of ATE. Why? Because, in the case of simple linear regression, with just a single predictor, the treatment indicator, the coefficient represents the *difference in group means*. ATE is defined as a difference in group means:
+
+$$\text{Estimated ATE} =  E[ Y_i |T=1] - E[Y_i|T=0]$$
+
+This is not be be confused with:
+
+$$\text{True ATE} = E[Y_i^{t=1} - Y_i^{t=0}]$$
+
+## Potential outcomes framework and the fundamental problem of causal inference. 
+
+Potential outcomes are defined as possibilities for a given course of action. Once the action is taken, one of the potential outcomes becomes the factual outcome and the other becomes the counterfactual outcome. Causal effects are defined in terms of potential outcomes *at the unit level*, as the difference between potential outcomes. The fundamental problem of causal inference is that the counterfactual is never observed so causal effects can never be calculated at the individual level.
+
+Recall able.com:
+
+```{r}
+toy_sales_PO <- read_csv("https://raw.githubusercontent.com/jefftwebb/data/main/toy_sales_PO.csv")
+toy_sales <- read_csv("https://raw.githubusercontent.com/jefftwebb/data/main/toy_sales_data.csv")
+
+head(toy_sales)
+head(toy_sales_PO)
+```
+
+We use this case to practice calculating treatment effects.
+
+```{r}
+
+# Calculate unit level ATE using PO data. This is simply average ITE.
+toy_sales_PO |>
+  summarize(ATE = mean(y1 - y0)) |> 
+  round(2) 
+  
+# Estimate ATE using observed data.  This is the difference in group means.
+toy_sales |>
+  group_by(is_on_sale) |> 
+  summarize(avg_sales = mean(weekly_amount_sold)) |>
+  mutate(ATE = diff(avg_sales))
+
+# Estimate CATE for weeks before christmas
+
+# Easy with PO
+toy_sales_PO |>
+  group_by(weeks_to_xmas) |>
+  summarize(ATE = mean(y1 - y0) |> round(2)) 
+
+# Harder without -- must estimate with interaction model
+lm(weekly_amount_sold ~  avg_week_sales + is_on_sale * weeks_to_xmas, 
+                         data = toy_sales) |>
+  summary()
+```
+
+Make sure you know how to interpret the coefficient from an interaction model, and back out various quantities such as CATE.
+
+An interaction model automatically includes the main effects for the terms included in the interaction. In this case, the interaction is between is_on_sale and weeks_to_xmas. The main effect for each of these terms represents the difference between the two levels of the variable *at the base level of the other variable*:
+
+- is_on_sale: 37.7873.  This is the difference between 0 and 1 in this variable when weeks_to_xmas is 0.
+- weeks_to_xmas: 32.2570. This is the difference between week 0 and week 1 in this variable when is_on_sale is 0.
+
+The interaction term is the difference in slopes for the regression between is_on_sale and weekly_amount_sold for each week to christmas.
+
+Hence:  
+
+- 37.7873 is the baseline. This is the effect of a sale in week zero, i.e. the week of Christmas.
+- 37.7873 + 9.5142 is the effect of a sale in week one.
+- Etc
+
+Alternatively, you could do these calculations using the regression equation itself paying attention to just the interaction variables: 37.7873 * is_on_sale + 32.2570 * weeks_to_xmas  + 9.5142 * is_on_sale * weeks_to_xmas.
+
+For week 0 we need to calculate the difference between is_on_sale = 1 and is_on_sale = 0:
+
+- 37.7873 * 1 + 32.2570 * 0  + 9.5142 * 1 * 0 = 37.783
+- 37.7873 * 0 + 32.2570 * 0  + 9.5142 * 0 * 0 = 0
+- The effect is 37.783 - 0 = 37.783
+
+Etc.
+
+## Randomization, exchangeability and balance tables
+
+Randomization creates exchangeable groups! Exchangeable means comparable. Randomization does not make the groups the same; instead, it ensures that subjects with different characteristics are evenly distributed between the groups. 
+
+Balance tables are often used to evaluate how balanced the groups are on pre-treatment variables.
+
+```{r}
+set.seed(123)
+n <- 500
+
+# With randomization
+df <- data.frame(treatment = sample(c(0,1), n, replace=TRUE),
+                 age = rnorm(n, mean=35, sd=10),
+                 income = rnorm(n, mean=50000, sd=20000))
+
+# Check balance 
+df |>
+  group_by(treatment) |>
+  summarize(mean(age),
+            mean(income))
+  
+```
+
+There will always be group differences. But these groups are pretty close. In this case, we know that the variation is purely random, by design.
+
+
+```{r}
+# without randomization self-selection creates non-exchangeable groups
+
+# suppose younger, higher income people more likely to select treatment
+set.seed(123)
+
+prob_select <- plogis((df$age - 35)/10 + (df$income - 50000)/20000)
+
+df_nr <- data.frame(treatment = rbinom(n, 1, prob_select),
+                 age = df$age,
+                 income = df$income)
+
+# Check balance 
+df_nr |>
+  group_by(treatment) |>
+  summarize(mean(age),
+            mean(income))
+```
+
+Here the group differences are more substantial. This simulation and balance table shows younger and wealthier people self selecting into the treatment.
+
+
+## AB testing 
+
+### Sample sizing
+
+Power analysis determines the minimum sample size needed to detect a true effect with a specified probability (power).
+
+If sample is too small might miss real effects (underpowered).  Too large: waste resources and time
+
+Sample size depends on:
+1. Effect size -- how big is the difference we want to detect (MEI)?
+2. Power -- what's the probability of detecting a true effect (TP rate or 1 - FN or beta)?
+3. Alpha -- tolerance for false positives
+4. Test type -- one-tailed vs two-tailed, continuous vs. binary
+
+## Type I and Type II errors
+
+Type I = FP.  Reject H0 when it's actually true, meaning we declare a winner but there's no real difference. Alpha of .05 means there is a 5% chance of a FP
+
+Type II = FN. Fail to reject H0 when it's actually false, meaning we miss  a real improvement. Beta of .2 means a 20% chance of FN
+
+Power is the TP rate: the prob of detecting a true effect (= 1 - beta)
+
+Tradeoff: Reducing alpha increases beta (and vice versa) for fixed sample size
+
+BUT: it is possible to simultaneously make changes to alpha and beta in the design phase, with consequences for sample size. Often, changes to conventional values for alpha and beta are driven by business considerations:
+
+- increase alpha if false positives are not a huge problem (at worst wasted resources)
+- increase power to avoid false negatives and missed opportunities
+
+## Statistical Tests
+
+For analyzing experimental data:
+
+- t-test or simple linear regression (continuous outcomes)
+- z-test for proportions or simple logistic regression (binary outcomes)  
+
+## 1-tailed vs 2-tailed tests
+
+For a directional null hypothesis as in the case of an AB test: use a one tailed test.
+
+This is different from the statistics automatically produced by linear regression, which are always 2 tailed.
+
+1 tailed test:
+- H0: B - A less than or equal to 0
+- H1: B - A > 0
+
+## Internal validity 
+
+Makes it difficult to claim the treatment caused the outcome because the two groups are affected differently during the experiment and are no longer comparable
+
+History threat:external events during the test affect groups differently. For example, a competitor launches sale during your pricing test.
+
+Maturation threat: natural changes overtime affect groups differently. For example, users, learn and adapt to new features at different rates.  Novelty effects are a kind of maturation threat.
+
+Instrumentation threat refers to changes in measurement during the experiment, that affects the groups differently. For example, there might be a bug in the randomization algorithm that affects one group, but not the other.
+
+Attrition threat is when there is non-random dropout from the groups.
+
+SUTVA:  the stable unit treatment value assumption is that the treatment assigned to one unit doesn't affect outcomes for other units. The classic case of violating SUTVA is in inventory:  supply is constrained for one group because of demand in the other group.
+
+Sample ratio mismatch (SRM) occurs when the observed between treatment/control differs from expected split (usually 50/50).
+
+## External validity
+
+Problems with external validity boil down to generalization problems. For example, the sample does not represent the larger customer population.
+
+## Zero inflated data 
+
+Zero inflation is when the outcome data has excess zeros due to, for example, low conversion rate. This reflects a two-stage decision process in which customers first decide whether to participate or not (binary, extensive margin) and then how much to participate (continuous, intensive margin).
+
+The consequence is that sample sizes go up a lot. 
+
+Why?
+
+ARPU = CR x ARPPU, where ARPU is average revenue per user, CR is conversion rate, ARPPU is average revenue per paying user
+
+
+Example:  
+
+ARPPU = 20 dollars
+CR = .1
+ARPU = .1 x 20 = 2
+
+Detecting a change of 1 dollar (2 --> 3) is much harder than detecting a change of 10 dollars (20 --> 30), requiring a larger sample size.
+
+```{r}
+power.t.test(delta = 10,
+             sd = 10,
+             power = .8,
+             alternative = "one.sided")
+
+# vs.
+
+power.t.test(delta = 1,
+             sd = 6.4, # exact calculation is beyond the scope of the course
+             power = .8,
+             alternative = "one.sided")
+```
+
+It can be tricky to make decisions with zero inflated data. For example, improving ARPPU might decrease CR, and vice versa. Example: higher prices lead to higher ARPU but lower CR.
+
+You should understand how to decompose the extensive and intensive marginal effects, and to reason about the driving force behind changes to ARPU.
+
+Key strategies for reducing sample sizes in designing experiments include: CUPED and group sequential testing.
+
+## CUPED
+
+CUPED is a variance reduction technique using pre-period data, that allows for much smaller sample sizes in the design phase. Note that if CUPED is used in design it must also be used in analysis.
+
+The key insight is that people are more similar to themselves than to others, so the idea is to use each person's baseline to reduce noise.
+
+The correlation between, for example, two months of pre-experiment spending is used to calculate an adjusted effect size (cohen's d), which should reduce the sample size.
+
+```{r}
+# Example from SkyConnect
+
+ocd <- .03460208 # original cohen's d
+rho <-  .8096162
+vrf <- sqrt(1-rho^2)
+ocd/vrf # adjusted cohen's d for use in sample size calc
+
+# .06 > .035!
+```
+
+For analysis, each customers previous spending is entered as a term in the regression. The treatment affect estimate is, as usual, the coefficient for the treatment variable.
+
+
+## Group sequential testing
+
+Group sequential testing is a method for shortening an AB test by evaluating group differences mid test, with the possibility of stopping early for either efficacy or futility. The statistics for making a decision about early stopping are built into the efficacy and futility boundaries. Here is an example from the Fluent.io case:
+
+```{r}
+ library(rpact)
+
+getDesignGroupSequential(typeOfDesign = "asOF", kMax = 4,
+        alpha = 0.05, typeBetaSpending = "bsOF") |>
+    getSampleSizeMeans(alternative = 0.5, stDev = 11) |>
+    summary() 
+```
+
+In this design, there are three looks at the data prior to collecting data on all subjects. The efficacy and futility bounds (on either the t or z-scale) specify the conditions for stopping early.

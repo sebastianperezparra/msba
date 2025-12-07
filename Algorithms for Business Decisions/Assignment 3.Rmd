@@ -1,0 +1,197 @@
+
+---
+title: "Assignment 3 SkyConnect Case"
+author: "Sebastian Perez Parra"
+date: "2025-09-04"
+format: 
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    toc-title: "Contents"
+    embed-resources: true
+execute:
+  include: true
+  eval: true
+  error: false    
+  warning: false
+  message: false
+
+---
+We start by loading the necessary libraries and the dataset.
+
+```{r load libraries}
+#load libraries
+library(tidyverse)
+```
+
+```{r load dataset}
+#load historical data
+d <- read_csv("https://raw.githubusercontent.com/jefftwebb/data/refs/heads/main/SkyConnect_data.csv")
+```
+
+
+# 1 
+
+We begin using the SkyConnect data to calculate inputs to the power calculation for experiment sizing and reporting historical average revenue per user (ARPU) and the standard deviation of revenue per user (SDRPU).
+
+
+```{r ARPU}
+d %>%
+  group_by(customer_id) %>% #group by customers
+  summarise(user_avg = mean(revenue)) %>% #calculate average spending for each customer
+  summarise(ARPU = mean(user_avg), SDRPU = sd(user_avg))
+```
+
+- The historical average revenue per user (ARPU) is $5.7 and the standard deviation of revenue per user (SDRPU) is $14.5.
+
+# 2
+
+Now we calculate the required sample size for this A/B test.
+
+```{ rsample size}
+power.t.test(delta = 0.5, #raw differences between means
+             sd = 14.45028,
+             sig.level = 0.05,
+             power = 0.8,
+             alternative = "one.sided")
+```
+
+- The required sample size for this A/B test in each group is 10,329 customers, 20,658 customers in total for the experiment.
+
+# 3
+
+We calculate the required duration in days for this A/B test assuming (1) The sample size from the previous question and (2) the average number of members who would be new to the experiment each day,
+
+```{r total visitors in experiment and avg new visitors per day}
+#calculate total visitors
+
+total_vis = 10329*2
+
+#calculate average new customers to the experiment
+
+avg_vis = d %>%
+  group_by(customer_id) %>%
+  summarise(first_session = min(session_date)) %>%
+  count(first_session) %>%
+  summarise(avg = mean(n)) %>%
+  pull(avg) %>%
+  ceiling()
+```
+
+
+
+```{r duration}
+#calculate duration
+
+ceiling(total_vis / avg_vis)
+```
+
+- The test will need to run for 78 days to ensure enough data to draw statistically valid conclusions. The duration was rounded up to suffice the minimum full required days (not partial).
+
+# 4 
+
+We want to reduce the duration of the test using CUPED. To do so, we first get the dataset that consists of customers who were present both in January and February. We then calculate the correlation between the spending between them.
+
+```{r corr}
+jan <- d %>%
+  filter(session_date >= as.Date("2024-01-01"), month == 1) %>%
+  group_by(customer_id) %>%
+  summarise(jan_avg = mean(revenue))
+
+
+feb <- d %>%
+  filter(session_date >= as.Date("2024-01-01"), month == 2) %>%
+  group_by(customer_id) %>%
+  summarise(feb_avg = mean(revenue))
+
+jan_feb <- inner_join(jan, feb, by = "customer_id")
+
+cor(jan_feb$jan_avg, jan_feb$feb_avg)
+
+```
+- The customer level correlation in average revenue between January and February 2024 is 0.81. A high correlation means that customer spending is stable month-to-month and that CUPED will be effective.
+
+# 5
+
+We calculate the updated sample size and approximate duration for the experiment using CUPED.
+
+```{r adjusted d}
+original_d <- 0.0346014 # calculated using G*Power
+rho <- 0.81
+vrf <- sqrt(1 - rho^2)
+(adjusted_d <- original_d / vrf)
+```
+
+
+- The required sample size in each group is 3553 customers, 7106 customers in total for the experiment.
+
+```{r updated duration}
+ceiling(7106 / avg_vis)
+```
+- The test will need to run for 27 days to ensure enough data to draw statistically valid conclusions. The duration was rounded up to suffice the minimum full required days (not partial).
+
+- CUPED reduced the sample size and the experiment duration by more than 50%.
+
+# 6
+
+CUPED is used before to get sample size, now we will use it to analyze results. We begin by loading the test data.
+
+```{r load test data}
+#load historical data
+d_test <- read_csv("https://raw.githubusercontent.com/jefftwebb/data/refs/heads/main/SkyConnect_test_data.csv")
+```
+
+## 6.1
+
+We simulate the sequential enrollment process by including all bookings for customers as they enter the experiment, stopping once they’ve enrolled the required number of unique customers required for the experiment (from Question 5). We subset the data as if it were the experimental data cut off based on the experimental design.
+
+```{r simulation}
+experiment_data <- d_test %>%
+  filter(new <= 7106)
+
+#customer level data
+customer_level <- experiment_data %>%
+  group_by(customer_id, treatment, historical_avg_revenue) %>%
+  summarise(avg_rev = mean(revenue))
+```
+
+## 6.2
+
+We analyze the treatment effect for a traditional A/B test using a t-test by running a regression.
+
+```{r trad A/B test}
+trad <- lm(avg_rev ~ treatment, data = customer_level) # regression for coefficients
+summary(trad)$coefficients["treatment", "Pr(>|t|)"] / 2 # divided by 2 for a one sided directional experiment
+summary(trad)
+confint(trad, "treatment", level = 0.95)
+```
+
+
+```{r t test}
+t.test(avg_rev ~ treatment, data = customer_level,
+       alternative = "greater",      
+       var.equal = TRUE,              # Welch's t-test (default)
+       conf.level = 0.95) 
+```
+
+- The treatment group showed a higher average revenue of $0.74 per user ($22.04 vs $22.78), but with a p-value of 0.1, the traditional A/B test is not statistically significant to reject the null hypothesis. The 95% confidence interval is $-0.44 to $1.92 for the treatment which includes zero as a difference in means. There isn't sufficient evidence to conclude that the new interface improves revenue.
+
+## 6.3
+
+Analyze and report the treatment effect using CUPED.
+
+```{r CUPED}
+cuped <- lm(avg_rev ~ treatment + historical_avg_revenue, data = customer_level) # regression for coefficients
+summary(cuped)$coefficients["treatment", "Pr(>|t|)"] / 2 # divided by 2 for a one sided directional experiment
+summary(cuped)
+confint(cuped, "treatment", level = 0.95)
+```
+
+- The treatment effect using CUPED shows an increase in average revenue per user of $0.65. With a p value of 0.02, it becomes statistically significant. The 95% confidence interval of $0.02 to $1.27 indicating a positive effect of the treatment. In other words, revenue for the SkyConnect Plus members improved with the new seat selection interface.
+
+# 7 
+
+- The experiment was a CUPED adjusted randomized A/B test comparing revenue per user between control and treatment groups, with historical spending included as a covariate to reduce variance. The treatment group showed a statistically significant (p = 0.02) increase in average revenue per user of $0.65, surpassing the $0.5 MEI suggesting the new interface increased revenue per SkyConnect Plus members. The confidence interval does not include zero, supporting the significance of the effect. 
+
+- Potential external and internal threats to validity were solved for by randomly assigning customers and performing customer level analysis. Given the data and the results supporting a positive impact of the treatment,  Tony should recommend rolling out the new seat selection interface. The new interface increased revenue per SkyConnect Plus member by $0.65.

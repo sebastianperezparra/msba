@@ -1,0 +1,294 @@
+---
+title: "Class 3"
+format: 
+  html:
+    toc: true
+    toc-depth: 3
+    toc-location: left
+    toc-title: "Contents"
+execute:
+  warning: false
+  message: false
+---
+
+# Ubisoft review
+
+## Q2
+
+Conversion rate is the proportion of customers who purchased: total conversions / total visitors.
+
+Looking at the data should make it clear what the calculation should be.
+
+```{r}
+# Packages
+library(tidyverse)
+
+# Download data
+hd <- read.csv("https://raw.githubusercontent.com/jefftwebb/data/main/ubisoft_historical.csv")
+
+# Snapshot
+head(hd)
+```
+
+How did you approach the calculation?
+
+## Q2
+
+Size the experiment for using the historical conversion rate + 1 pp MEI, with conventional settings.
+
+Be careful! .5 is a lot different from .05!!!
+
+Information needed from company data:\
+1. historical conversion rate. 2. type of test to analyze the experiment.
+
+Choices:\
+1. MEI (historical conversion rate + MEI = p2). 2. Alpha 3. Power
+
+```{r}
+?power.prop.test
+
+power.prop.test(p1 = .0485, 
+                p2 = .0585, 
+                sig.level = .05, # alpha
+                power = .8, 
+                alternative = "one.sided") # for directional null
+
+```
+
+The total sample size should always be even. Why?
+
+## Q4
+
+Duration of test.
+
+```{r}
+mean(hd$Visitors) # 530
+min(hd$Visitors) # 460
+
+6261 * 2 / 530 # 23.62 days on average
+ 6261 * 2 / 460 # 27.22 days with minimum visitor counts
+```
+
+Which daily visitor count did you pick?
+
+## Q5
+
+Avoid false negatives, tolerate more false positives: increase power *and* alpha.
+
+```{r}
+# Recalculate with higher power and higher alpha-- say, .9 and .2 respectively
+power.prop.test(p1 = .0485, 
+                p2 = .0585, 
+                sig.level = .2, 
+                power = .9, 
+                alternative = "one.sided")
+
+# 4564 * 2 = 9128
+
+```
+
+The overall sample size has decrease. Larger sample sizes are required to boost the power to detect the MEI and avoid a false negative mistake---when there is a real effect but we fail to reject the null. In this case, though, we have also increased alpha (from .05 to .2), which will reduce the sample size and offsets the change in power.
+
+What other settings did people use?
+
+How will changing alpha to .2 in the design phase alter the analysis of the experimental data afterwards? Does power of .9 have implications for the later analysis?
+
+## Q6
+
+Validate the sample size from Q5 using simulation. This can be done a lot of different ways.
+
+```{r}
+# create a function
+sim_conversions <- function(total_visitors = 9128,
+                            conversion_rate_control =.0485,
+                            conversion_rate_treat = .0585){
+
+    # 1. Simulate control group
+  control <- rbinom(n = total_visitors / 2, 
+                    size = 1, 
+                    prob = conversion_rate_control)
+  
+  # 2. Simulate treatment group
+  treatment <- rbinom(n = total_visitors / 2, 
+                    size = 1, 
+                    prob = conversion_rate_treat)
+  
+  # 3. Output as data.frame
+  data.frame(control, treatment)
+  
+}
+
+# set the see for reproducibility
+set.seed(123) 
+
+# save the simulated data
+sim_data <- sim_conversions() 
+
+```
+
+Next, analyze the data:
+
+```{r}
+# for prop.test: could use table() to format the inputs, or:
+  # x is a vector of counts of successes
+  # n is a  vector of trials
+
+? prop.test
+
+prop.test(x = c(sum(sim_data$treatment), sum(sim_data$control)),
+          n = c(length(sim_data$treatment), length(sim_data$control)),
+          alternative = "greater")
+
+# Remember: .2 is the p-value threshold for determining statistical
+# significance, given our experiment planning
+```
+
+Power was set at .9 when sizing the experiment. We can use the simulation function to evaluate we actually obtain that power for this design.
+
+-   Alpha was set at .2. Any p-value < .2 will be counted as statistically significant. Remember: alpha sets the false positive rate.
+
+-   Power is the true positive rate, the rate at which we successfully detect an actual effect. This will be the proportion of p-values < .2.
+
+This is to done to create a distribution for the p value to confirm it's validity.
+
+```{r}
+# initialize a vector to hold the p-values 
+pvals <- 1:1000
+  
+# run a loop with 1000 sims; extract the p-values from the test
+for(i in 1:1000){
+  sim_data <- sim_conversions()
+  
+  pvals[i] <- prop.test(x = c(sum(sim_data$treatment), sum(sim_data$control)),
+                        n = c(length(sim_data$treatment), length(sim_data$control)),
+                        alternative = "greater",
+                        correct = F)$p.value # continuity correction not needed
+}
+
+mean(pvals < .2) # power, calculated at .2 as per Q5
+```
+
+
+90% of the simulations are statistically significant (given the power).
+## Q7
+
+This probably felt a little open ended. That's okay.
+
+We were looking for 2-3 paragraphs that cover the main points listed in the question.
+
+# Preparing for the SkyConnect case
+
+This is similar to Ubisoft except that the endpoint (or evaluation metric, which will be analyzed after the experiment) is continuous not binary: ARPU rather than conversions. Consequently the analysis will be conducted with linear regression or a t-test rather than a z-test of proportions.
+
+The toughest things in this case might be writing code to wrangle/subset the data.
+
+## Q1
+
+Use historical data to calculate ARPU and SDRPU.
+
+This is a bit tricky. Let's look at the data, organized by user:
+
+```{r}
+d <- read.csv("https://raw.githubusercontent.com/jefftwebb/data/refs/heads/main/SkyConnect_data.csv")
+
+d |>
+  arrange(customer_id, session_date)
+```
+
+Given that there are multiple seat upgrades per user (often with different charges) how would you calculate ARPU, which is a metric that summarizes revenue across all users?
+
+## Q2
+
+Size the AB test of ARPU.
+
+This is similar to Ubisoft except that you are sizing for a continuous endpoint. The easiest thing to do is to assume that you will be analyzing the experiment with a t-test and use the appropriate power analysis function. Here is an example supposing a difference in means of 5 and SD of 10:
+
+```{r}
+? power.t.test
+
+# Arguments:
+  # delta is the difference in means. 
+  # sd is the expected standard deviation
+
+power.t.test(delta = 5, 
+             sd = 10, 
+             sig.level = .05, 
+             power = .8, 
+             alternative = "one.sided")
+```
+
+What is the total sample size required?
+
+## Q3
+
+Calculate experiment duration, based on the incoming number of SkyConnect Plus members who are new to the experiment.
+
+This is tricky because: "new to the experiment." Each customer can get assigned to treatment just once. So you wouldn't want to include their subsequent visits in the duration calculation.
+
+Here's the data:
+
+```{r}
+head(d)
+```
+
+How would you get an accurate estimate of arrivals who would be new to the experiment?
+
+## Q4
+
+Use CUPED to reduce test duration. This will involve computing rho (the month-month correlation in spending) in order to calculate the variance reduction factor and adjusted Cohen's d.
+
+Again, a data wrangling challenge. You need to write code to calculate the correlation in average spending between January and February 2024 for customers who are represented in the data for both months. There are lots of different way fo doing this. Here is a toy example for what the data might look like:
+
+```{r}
+# Data structure example.  FOR ILLUSTRION ONLY!
+
+data.frame(customer = c("A", "B","C"),
+           jan_spending = c(0, 25, 75),
+           feb_spending = c(0, 50, 50))
+
+# In R use cor() to compute correlation
+
+```
+
+## Q5
+
+Update the experimental design (sample size and duration) assuming use of CUPED for analysis.
+
+This is fairly straightforward in that you just follow the steps. Here is an example. Suppose that the original Cohen's d (the standardized effect size) is .2, and that the correlation (or rho) from the previous question is .7.
+
+```{r}
+original_d <- .2
+rho <- .7
+vrf <- sqrt(1 - rho^2)
+(adjusted_d <- original_d / vrf)
+```
+
+In this example adjusted D is larger, which will reduce the sample size and experiment duration, all other things equal.
+
+## Q6
+
+Analyze the experimental data with and without CUPED.
+
+For this question, you will work with the data set collected during the experiment. It has the same structure except for the addition of a column: `new`.
+
+```{r}
+td <- read.csv("https://raw.githubusercontent.com/jefftwebb/data/refs/heads/main/SkyConnect_test_data.csv")
+
+head(td)
+```
+
+Use the `new` column to subset the data according to your sample size calculations. For example, if you calculated that you would need 100 subjects, then subset the data to include only rows with `new` less than or equal to 100.
+
+Do the analysis with this filtered data set:
+
+1. Use a t-test to analyze the data as for a traditional AB test.
+
+2. Analyze the data using CUPED.
+
+In both cases, you should report both a point estimate of the effect, as well as a 95% confidence interval. Comment on statistical significance.
+
+## Q7
+
+Write a recommendation that summarizes the experimental design and results and considers threats to validity.
+
+Again, this is open ended and may feel uncomfortable. But it is good practice dealing with real world ambiguity when reporting analytics results.
